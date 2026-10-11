@@ -137,7 +137,7 @@ This ensures **nothing writes to the host machine**.
 
 - Windows 10/11 (64-bit)
 - ~8 GB free space on USB for full toolchain
-- Internet connection for initial tool downloads
+- Internet connection 
 
 ## License
 
