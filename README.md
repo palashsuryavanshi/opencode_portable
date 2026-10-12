@@ -6,6 +6,11 @@ Complete portable development environment for Windows. Run from USB without inst
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)
 ![Size](https://img.shields.io/badge/portable%20size-~6.8%20GB-orange)
 
+> ### Also available for Linux
+> This is the **Windows** edition. For the Linux version, with the same
+> toolchain and the same portable design, see:
+> **[opencode-portable-linux](https://github.com/palashsuryavanshi/opencode-portable-linux)**
+
 ## What's Included
 
 | Tool | Version | Purpose |
@@ -138,6 +143,18 @@ This ensures **nothing writes to the host machine**.
 - Windows 10/11 (64-bit)
 - ~8 GB free space on USB for full toolchain
 - Internet connection 
+
+## Platforms
+
+| Edition | Repository | Launcher |
+|---|---|---|
+| **Windows 10/11 (x64)** | [`opencode_portable`](https://github.com/palashsuryavanshi/opencode_portable) — *this repo* | `Launch.cmd` |
+| **Linux (x64)** | [`opencode-portable-linux`](https://github.com/palashsuryavanshi/opencode-portable-linux) | `./launch.sh` |
+
+Both editions ship the same toolchains, the same session layout, and the same
+`data/`-on-the-stick isolation model. Session databases are not shared between
+platforms, but the launchers and directory structure are identical, so moving
+a workflow between the two is straightforward.
 
 ## License
 
