@@ -1,18 +1,33 @@
 @echo off
 rem ============================================================================
 rem  OpenCode Portable - main launcher
-rem  Double-click this (or Launch.cmd at the USB root) to start the GUI.
+rem  Starts the OpenCode GUI. Called from Launch.cmd (option 1) or directly.
 rem ============================================================================
 setlocal
-call "%~dp0bin\env.cmd"
+rem %~dp0 is this script's folder (...\bin\), so env.cmd sits next to us.
+call "%~dp0env.cmd"
 title OpenCode Portable
 
-rem Make sure we are running from the stick, not a copy left behind.
-if /i not "%~d0"=="%PORTABLE_ROOT%" (
-  echo [!] Launch from the USB root, not from bin\.
+if not defined PORTABLE_ROOT (
+  echo [!] env.cmd failed to load - cannot resolve the portable root.
+  pause
+  exit /b 1
 )
 
-rem Electron writes its profile (window size, state) to %APPDATA%\opencode-desktop.
-rem Keep that on the stick too so the GUI feels identical on every machine.
-start "" "%PORTABLE_ROOT%\apps\opencode\OpenCode.exe" %*
+set "OPENCODE_EXE=%PORTABLE_ROOT%\apps\opencode\OpenCode.exe"
+
+if not exist "%OPENCODE_EXE%" (
+  echo.
+  echo [!] OpenCode GUI not found at:
+  echo       %OPENCODE_EXE%
+  echo.
+  echo     On a fresh copy, install the app first:
+  echo       bin\Update-OpenCode.cmd
+  echo     or from Launch.cmd choose option 9.
+  echo.
+  pause
+  exit /b 1
+)
+
+start "" "%OPENCODE_EXE%" %*
 exit /b 0
