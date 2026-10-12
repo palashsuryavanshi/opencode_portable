@@ -1,0 +1,746 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Interactive, selective tool installer for OpenCode Portable (Windows).
+
+.DESCRIPTION
+    The full bundle is roughly 7 GB. This script lets the user pick only the
+    toolchains they actually want, shows sizes and checks free space before
+    downloading anything, and verifies each tool after install.
+
+    Everything lands under <ROOT>\apps. The script never touches
+    <ROOT>\data (chat sessions, caches) or <ROOT>\projects.
+
+.PARAMETER All
+    Install every tool. Non-interactive.
+
+.PARAMETER Minimal
+    Install only OpenCode itself. Non-interactive.
+
+.PARAMETER Only
+    Comma-separated tool names to install. Non-interactive.
+
+.PARAMETER Force
+    Reinstall tools that are already present.
+
+.PARAMETER List
+    Show the tool catalogue and exit.
+
+.PARAMETER NoAndroid
+    Skip Android SDK package installation (keep the command-line tools).
+
+.EXAMPLE
+    .\install-selected-tools.ps1
+    Install interactively, choosing tools.
+
+.EXAMPLE
+    .\install-selected-tools.ps1 -Minimal
+    Install only OpenCode.
+
+.EXAMPLE
+    .\install-selected-tools.ps1 -Only "jdk,node,go"
+    Install exactly those toolchains, unattended.
+#>
+[CmdletBinding()]
+param(
+    [switch] $All,
+    [switch] $Minimal,
+    [string] $Only,
+    [switch] $Force,
+    [switch] $List,
+    [switch] $NoAndroid
+)
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+$ProgressPreference    = 'SilentlyContinue'
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root      = Split-Path -Parent $ScriptDir          # portable root
+$AppsDir   = Join-Path $Root 'apps'
+$DlDir     = Join-Path $Root 'downloads'
+$UnpackDir = Join-Path $DlDir   '_unpack'
+
+foreach ($d in @($AppsDir, $DlDir, $UnpackDir)) {
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+}
+
+# ---------------------------------------------------------------------------
+# Tool catalogue
+# ---------------------------------------------------------------------------
+# SizeMB is the approximate size once installed on disk.
+$Tools = @(
+    [pscustomobject]@{ Name = 'opencode'; Label = 'OpenCode GUI + CLI';        SizeMB = 740;  Desc = 'The AI coding assistant (required)' }
+    [pscustomobject]@{ Name = 'vscode';   Label = 'VS Code (portable)';        SizeMB = 1030; Desc = 'Portable ZIP edition, data on the stick' }
+    [pscustomobject]@{ Name = 'jdk';      Label = 'Temurin JDK 21 LTS';       SizeMB = 330;  Desc = 'Java, needed for Android and Gradle' }
+    [pscustomobject]@{ Name = 'android';  Label = 'Android SDK';              SizeMB = 655;  Desc = 'cmdline-tools, platform-tools, build-tools 34/35' }
+    [pscustomobject]@{ Name = 'node';     Label = 'Node.js (latest LTS)';     SizeMB = 105;  Desc = 'JavaScript and TypeScript' }
+    [pscustomobject]@{ Name = 'go';       Label = 'Go (latest)';              SizeMB = 240;  Desc = 'Go toolchain' }
+    [pscustomobject]@{ Name = 'python';   Label = 'Python (full stdlib)';     SizeMB = 250;  Desc = 'includes pip; embeddable build will NOT work' }
+    [pscustomobject]@{ Name = 'dotnet';   Label = '.NET SDK';                 SizeMB = 770;  Desc = 'C# and F#' }
+    [pscustomobject]@{ Name = 'rust';     Label = 'Rust (rustup)';            SizeMB = 760;  Desc = 'cargo / rustc, stable toolchain' }
+    [pscustomobject]@{ Name = 'git';      Label = 'Git for Windows';          SizeMB = 390;  Desc = 'PortableGit, includes Git Bash' }
+    [pscustomobject]@{ Name = 'maven';    Label = 'Maven';                    SizeMB = 12;   Desc = 'Java build tool' }
+)
+
+function Write-Step  { param([string]$m) Write-Host "`n==> $m" -ForegroundColor Cyan }
+function Write-Ok    { param([string]$m) Write-Host "    [ok]   $m" -ForegroundColor Green }
+function Write-Warn2 { param([string]$m) Write-Host "    [warn] $m" -ForegroundColor Yellow }
+function Write-Err2  { param([string]$m) Write-Host "    [FAIL] $m" -ForegroundColor Red }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+function Find-7z {
+    $c = Get-Command 7z -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in @(
+        "$env:ProgramFiles\7-Zip\7z.exe",
+        "${env:ProgramFiles(x86)}\7-Zip\7z.exe",
+        "$env:LOCALAPPDATA\Programs\7-Zip\7z.exe"
+    )) { if (Test-Path $p) { return $p } }
+    return $null
+}
+
+# Expand an archive. $StripWrapper moves the contents of the single wrapper
+# directory up into $Dest. Many tool archives nest everything one level deep;
+# getting this wrong leaves the tool one folder too deep and breaks PATH.
+function Expand-ArchiveSmart {
+    param(
+        [string] $Archive,
+        [string] $Dest,
+        [bool]   $StripWrapper
+    )
+    $seven = Find-7z
+    if (-not $seven) { throw "7-Zip not found. Install it and re-run." }
+
+    if ($StripWrapper) {
+        $stage = Join-Path $UnpackDir ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        & $seven x $Archive "-o$stage" -y | Out-Null
+        $child = Get-ChildItem $stage -Directory | Select-Object -First 1
+        if ($child) {
+            if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+            Get-ChildItem $child.FullName -Force | ForEach-Object {
+                Move-Item $_.FullName -Destination $Dest -Force
+            }
+        } else {
+            New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+            Get-ChildItem $stage -Force | ForEach-Object {
+                Move-Item $_.FullName -Destination $Dest -Force
+            }
+        }
+        Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+        & $seven x $Archive "-o$Dest" -y | Out-Null
+    }
+}
+
+function Test-ToolInstalled {
+    param([string]$Name)
+    switch ($Name) {
+        'opencode' { return (Test-Path (Join-Path $AppsDir 'opencode\OpenCode.exe')) }
+        'vscode'   { return (Test-Path (Join-Path $AppsDir 'vscode\Code.exe')) }
+        'jdk'      { return (Test-Path (Join-Path $AppsDir 'jdk\bin\java.exe')) }
+        'android'  { return (Test-Path (Join-Path $AppsDir 'android-sdk\cmdline-tools\latest\bin\sdkmanager.bat')) }
+        'node'     { return (Test-Path (Join-Path $AppsDir 'node\node.exe')) }
+        'go'       { return (Test-Path (Join-Path $AppsDir 'go\bin\go.exe')) }
+        'python'   { return (Test-Path (Join-Path $AppsDir 'python\python.exe')) }
+        'dotnet'   { return (Test-Path (Join-Path $AppsDir 'dotnet\dotnet.exe')) }
+        'rust'     { return (Test-Path (Join-Path $Root 'data\cargo\bin\cargo.exe')) }
+        'git'      { return (Test-Path (Join-Path $AppsDir 'git\cmd\git.exe')) }
+        'maven'    { return (Test-Path (Join-Path $AppsDir 'maven\bin\mvn.cmd')) }
+    }
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# URL resolution - each tool resolves its own current stable release
+# ---------------------------------------------------------------------------
+function Resolve-Url {
+    param([string]$Name)
+
+    switch ($Name) {
+
+        'opencode' {
+            return 'https://opencode.ai/download/stable/windows-x64-nsis'
+        }
+
+        'vscode' {
+            return 'https://update.code.visualstudio.com/latest/win32-x64-archive/stable'
+        }
+
+        'jdk' {
+            $a = Invoke-RestMethod 'https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse'
+            return $a[0].binary.package.link
+        }
+
+        'go' {
+            $rel = Invoke-RestMethod 'https://go.dev/dl/?mode=json'
+            $f = $rel[0].files | Where-Object {
+                $_.os -eq 'windows' -and $_.arch -eq 'amd64' -and $_.kind -eq 'archive'
+            } | Select-Object -First 1
+            return "https://go.dev/dl/$($f.filename)"
+        }
+
+        'node' {
+            $idx = Invoke-RestMethod 'https://nodejs.org/dist/index.json'
+            $n = $idx | Where-Object { $_.lts -and $_.files -contains 'win-x64-zip' } | Select-Object -First 1
+            return "https://nodejs.org/dist/$($n.version)/node-$($n.version)-win-x64.zip"
+        }
+
+        'maven' {
+            $h = Invoke-WebRequest 'https://dlcdn.apache.org/maven/maven-3/' -UseBasicParsing
+            $v = ([regex]::Matches($h.Content, '3\.\d+\.\d+') |
+                  ForEach-Object { $_.Value } |
+                  Sort-Object -Unique -Descending | Select-Object -First 1)
+            return "https://dlcdn.apache.org/maven/maven-3/$v/binaries/apache-maven-$v-bin.zip"
+        }
+
+        'git' {
+            # PortableGit is a self-extracting 7z whose payload is ALREADY FLAT.
+            # Do not strip a wrapper directory here - doing so yields only bin\.
+            $rel = Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest' `
+                                    -Headers @{ 'User-Agent' = 'opencode-portable' }
+            $a = $rel.assets | Where-Object { $_.name -match 'PortableGit.*64-bit\.7z\.exe$' } | Select-Object -First 1
+            return $a.browser_download_url
+        }
+
+        'dotnet' {
+            # Channel 9.0 LTS. The SDK zip is already flat (no wrapper folder).
+            $idx = Invoke-RestMethod 'https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/releases-index.json'
+            $ch  = $idx.'releases-index' |
+                   Where-Object { $_.'channel-version' -eq '9.0' -and $_.'support-phase' -eq 'active' } |
+                   Select-Object -First 1
+            if (-not $ch) { $ch = $idx.'releases-index' | Select-Object -First 1 }
+            $sdk = Invoke-RestMethod $ch.'releases-json'
+            $rel = $sdk.releases | Where-Object { $_.sdk.version -eq $ch.'latest-sdk' } | Select-Object -First 1
+            $f = $rel.sdk.files | Where-Object {
+                $_.name -match 'win-x64\.zip$' -and $_.name -notmatch 'aspnetcore|runtime'
+            } | Select-Object -First 1
+            return $f.url
+        }
+
+        'python' {
+            # The embeddable zip has no pip and no ensurepip, so `python -m pip`
+            # fails afterwards. Use the full stdlib from NuGet instead; the
+            # package unpacks into a tools\ directory that we flatten.
+            $html = Invoke-WebRequest 'https://www.python.org/downloads/windows/' -UseBasicParsing
+            $link = $html.Links | Where-Object { $_.href -match 'python-3\.13\.\d+-amd64\.exe$' } | Select-Object -First 1
+            $ver  = if ($link) { ([regex]::Match($link.href, '3\.13\.\d+')).Value } else { '3.13.0' }
+            return "https://www.nuget.org/api/v2/package/python/$ver"
+        }
+
+        'rust' {
+            return 'https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe'
+        }
+
+        'android' {
+            $xml = Invoke-WebRequest 'https://dl.google.com/android/repository/repository2-3.xml' -UseBasicParsing
+            $m = [regex]::Match($xml.Content, 'commandlinetools-win-(\d+)_latest\.zip')
+            return "https://dl.google.com/android/repository/commandlinetools-win-$($m.Groups[1].Value)_latest.zip"
+        }
+    }
+    return $null
+}
+
+function Get-ArchiveName {
+    param([string]$Name, [string]$Url)
+    switch ($Name) {
+        'opencode' { return 'opencode-setup.exe' }
+        'vscode'   { return 'vscode.zip' }
+        'jdk'      { return 'jdk.zip' }
+        'android'  { return 'android-cmdline.zip' }
+        'node'     { return 'node.zip' }
+        'go'       { return 'go.zip' }
+        'python'   { return 'python.nupkg' }
+        'dotnet'   { return 'dotnet.zip' }
+        'rust'     { return 'rustup-init.exe' }
+        'git'      { return 'portablegit.7z.exe' }
+        'maven'    { return 'maven.zip' }
+    }
+    $leaf = [System.IO.Path]::GetFileName(([Uri]$Url).AbsolutePath)
+    if (-not $leaf) { return "$Name.bin" }
+    return $leaf
+}
+
+# ---------------------------------------------------------------------------
+# Installers
+# ---------------------------------------------------------------------------
+function Install-OpenCode {
+    param([string]$Archive)
+    $seven = Find-7z
+    $stage = Join-Path $UnpackDir 'opencode'
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+
+    # The NSIS installer wraps the payload in $PLUGINSDIR\app-64.7z
+    & $seven x $Archive "-o$stage" -y | Out-Null
+    $app7z = Join-Path $stage '$PLUGINSDIR\app-64.7z'
+    if (-not (Test-Path $app7z)) { throw "app-64.7z not found inside the NSIS payload" }
+
+    Expand-ArchiveSmart -Archive $app7z -Dest (Join-Path $AppsDir 'opencode') -StripWrapper $false
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Verify the bundled CLI too - the GUI depends on it
+    $cli = Join-Path $AppsDir 'opencode\resources\opencode-cli.exe'
+    if (-not (Test-Path $cli)) { throw "opencode-cli.exe missing from resources" }
+    $ver = & $cli --version 2>&1 | Select-Object -First 1
+    Write-Ok "OpenCode GUI + CLI  ($ver)"
+}
+
+function Install-Vscode {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'vscode') -StripWrapper $false
+    # A 'data' folder next to Code.exe is what makes the ZIP edition portable
+    New-Item -ItemType Directory -Force -Path (Join-Path $AppsDir 'vscode\data') | Out-Null
+    Write-Ok "VS Code  $((Get-Item (Join-Path $AppsDir 'vscode\Code.exe')).VersionInfo.ProductVersion)"
+}
+
+function Install-Jdk {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'jdk') -StripWrapper $true
+    # Verify against the folder that actually contains bin\java.exe. A plain
+    # wildcard would pick ...\jdk\lib, which is not a usable JAVA_HOME.
+    $home = Get-ChildItem (Join-Path $AppsDir 'jdk') -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName 'bin\java.exe') } |
+            Select-Object -First 1
+    if (-not $home) { $home = Get-Item (Join-Path $AppsDir 'jdk') }
+    $v = & (Join-Path $home.FullName 'bin\java.exe') -version 2>&1 | Select-Object -First 1
+    Write-Ok "JDK  $v"
+}
+
+function Install-Go {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'go') -StripWrapper $true
+    $v = & (Join-Path $AppsDir 'go\bin\go.exe') version
+    Write-Ok "Go  $v"
+}
+
+function Install-Node {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'node') -StripWrapper $true
+    $v = & (Join-Path $AppsDir 'node\node.exe') -v
+    Write-Ok "Node  $v"
+}
+
+function Install-Maven {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'maven') -StripWrapper $true
+    Write-Ok "Maven  installed"
+}
+
+function Install-Git {
+    param([string]$Archive)
+    # FLAT payload - do not strip a wrapper
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'git') -StripWrapper $false
+    if (-not (Test-Path (Join-Path $AppsDir 'git\cmd\git.exe'))) {
+        throw "git\cmd\git.exe missing - PortableGit should be extracted flat"
+    }
+    $v = & (Join-Path $AppsDir 'git\cmd\git.exe') --version
+    Write-Ok "Git  $v"
+}
+
+function Install-Dotnet {
+    param([string]$Archive)
+    Expand-ArchiveSmart -Archive $Archive -Dest (Join-Path $AppsDir 'dotnet') -StripWrapper $false
+    $env:DOTNET_ROOT = Join-Path $AppsDir 'dotnet'
+    $v = & (Join-Path $AppsDir 'dotnet\dotnet.exe') --version
+    Write-Ok ".NET  $v"
+}
+
+function Install-Python {
+    param([string]$Archive)
+    $dest = Join-Path $AppsDir 'python'
+    $seven = Find-7z
+    $stage = Join-Path $UnpackDir 'python'
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    & $seven x $Archive "-o$stage" -y | Out-Null
+
+    # The NuGet package unpacks to tools\ which holds the real interpreter
+    $tools = Join-Path $stage 'tools'
+    if (Test-Path $tools) {
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Get-ChildItem $tools -Force | ForEach-Object { Move-Item $_.FullName -Destination $dest -Force }
+    } else {
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        Get-ChildItem $stage -Force | ForEach-Object { Move-Item $_.FullName -Destination $dest -Force }
+    }
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+
+    $py = Join-Path $dest 'python.exe'
+    # Bootstrap pip: the NuGet build ships without it
+    Write-Host "    bootstrapping pip..."
+    Invoke-WebRequest 'https://bootstrap.pypa.io/get-pip.py' -OutFile (Join-Path $dest 'get-pip.py') -UseBasicParsing
+    & $py (Join-Path $dest 'get-pip.py') --quiet 2>&1 | Out-Null
+
+    # pip entry points are not generated, so provide wrappers
+    $scripts = Join-Path $dest 'Scripts'
+    New-Item -ItemType Directory -Force -Path $scripts | Out-Null
+    foreach ($n in @('pip', 'pip3')) {
+        $bat = Join-Path $scripts "$n.bat"
+        $body = "@echo off`r`nsetlocal`r`nset `"PYTHONHOME=%~dp0..`"`r`n`"%~dp0..\python.exe`" -m $n %*`r`n"
+        [System.IO.File]::WriteAllText($bat, $body)
+    }
+
+    $v = & $py -c 'import sys; print(sys.version.split()[0])'
+    Write-Ok "Python  $v (pip bootstrapped)"
+}
+
+function Install-Rust {
+    param([string]$Archive)
+    $cargo  = Join-Path $Root 'data\cargo'
+    $rustup = Join-Path $Root 'data\rustup'
+    New-Item -ItemType Directory -Force -Path $cargo, $rustup | Out-Null
+    $env:CARGO_HOME   = $cargo
+    $env:RUSTUP_HOME  = $rustup
+    & $Archive -y --no-modify-path --default-toolchain stable --profile minimal 2>&1 |
+        Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" }
+    $v = & (Join-Path $cargo 'bin\cargo.exe') --version
+    Write-Ok "Rust  $v"
+}
+
+function Install-Android {
+    param([string]$Archive)
+    $sdk = Join-Path $AppsDir 'android-sdk'
+    $seven = Find-7z
+    $stage = Join-Path $UnpackDir 'androidcmd'
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    & $seven x $Archive "-o$stage" -y | Out-Null
+
+    # The SDK manager only runs from a directory literally named 'latest'
+    $cl = Join-Path $sdk 'cmdline-tools'
+    if (Test-Path $cl) { Remove-Item $cl -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $cl | Out-Null
+    Move-Item (Join-Path $stage 'cmdline-tools') (Join-Path $cl 'latest') -Force
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+
+    # JAVA_HOME must point at the folder that holds bin\java.exe
+    $jdkHome = Get-ChildItem (Join-Path $AppsDir 'jdk') -Directory -ErrorAction SilentlyContinue |
+               Where-Object { Test-Path (Join-Path $_.FullName 'bin\java.exe') } |
+               Select-Object -First 1
+    if (-not $jdkHome -and (Test-Path (Join-Path $AppsDir 'jdk\bin\java.exe'))) {
+        $jdkHome = Get-Item (Join-Path $AppsDir 'jdk')
+    }
+    $env:JAVA_HOME = if ($jdkHome) { $jdkHome.FullName } else { Join-Path $AppsDir 'jdk' }
+    $env:ANDROID_HOME = $sdk
+    $env:ANDROID_SDK_ROOT = $sdk
+
+    $sdkm = Join-Path $sdk 'cmdline-tools\latest\bin\sdkmanager.bat'
+    Write-Ok "Android command-line tools installed"
+
+    if ($NoAndroid) { Write-Warn2 "skipping SDK packages (-NoAndroid)"; return }
+
+    # Licences are non-interactive. The tool blocks on stdin when it inherits
+    # a console, so pipe a supply of 'y' rather than letting it wait.
+    1..40 | ForEach-Object { 'y' } | & $sdkm --sdk_root="$sdk" --licenses 2>&1 | Out-Null
+
+    # NOTE: the current cmdline-tools delegate to the new `android` CLI, which
+    # takes sdk-style paths with FORWARD SLASHES. The semicolon form fails
+    # with "Package not found".
+    $pkgs = @('platform-tools', 'build-tools/35.0.0', 'platforms/android-35',
+              'build-tools/34.0.0', 'platforms/android-34')
+    foreach ($p in $pkgs) {
+        Write-Host "    installing $p ..."
+        & $sdkm --sdk_root="$sdk" $p 2>&1 | Select-Object -Last 1 | ForEach-Object { Write-Host "      $_" }
+    }
+
+    $adb = Join-Path $sdk 'platform-tools\adb.exe'
+    if (Test-Path $adb) {
+        $env:PATH = "$(Join-Path $sdk 'platform-tools');$env:PATH"
+        $v = (& $adb version 2>&1 | Select-Object -First 1)
+        Write-Ok "Android SDK  ($v)"
+    } else {
+        throw "adb.exe missing after package install"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Catalogue display / selection
+# ---------------------------------------------------------------------------
+function Show-Catalogue {
+    Write-Host ""
+    Write-Host "  OpenCode Portable - tool installer" -ForegroundColor White
+    Write-Host "  root: $Root"
+    Write-Host ""
+    Write-Host ("  {0,-3} {1,-26} {2,7}  {3}" -f '#', 'Tool', 'Size', 'Notes') -ForegroundColor White
+    Write-Host "  " ('-' * 74) -ForegroundColor DarkGray
+    $i = 0
+    foreach ($t in $Tools) {
+        $i++
+        $mark = if (Test-ToolInstalled $t.Name) { 'installed' } else { '' }
+        Write-Host ("  {0,-3} {1,-26} {2,6} MB  {3} {4}" -f $i, $t.Label, $t.SizeMB, $t.Desc, $mark)
+    }
+    Write-Host "  " ('-' * 74) -ForegroundColor DarkGray
+    $total = ($Tools | Measure-Object SizeMB -Sum).Sum
+    Write-Host ("  {0,-30} {1,6} MB  (full bundle)" -f 'TOTAL', $total)
+    Write-Host ""
+}
+
+function Select-Tools {
+    Show-Catalogue
+    Write-Host "  Enter numbers to toggle, separated by spaces or commas." -ForegroundColor DarkGray
+    Write-Host "  Useful: 'a' = all, 'n' = none, 'q' = quit" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $sel = @{}
+    for ($i = 0; $i -lt $Tools.Count; $i++) { $sel[$Tools[$i].Name] = $false }
+
+    while ($true) {
+        $line = Read-Host '  Your selection'
+        # EOF (no more input) returns $null - stop rather than spin forever
+        if ($null -eq $line) { break }
+        $line = $line.Trim().ToLower()
+
+        if ($line -eq 'q') { exit 0 }
+        if ($line -eq 'a') { foreach ($k in $sel.Keys) { $sel[$k] = $true }; break }
+        if ($line -eq 'n' -or $line -eq '') { break }
+
+        foreach ($tok in ($line -split '[,\s]+')) {
+            if ($tok -match '^\d+$') {
+                $idx = [int]$tok - 1
+                if ($idx -ge 0 -and $idx -lt $Tools.Count) {
+                    $n = $Tools[$idx].Name
+                    $sel[$n] = -not $sel[$n]
+                } else {
+                    Write-Warn2 "no tool numbered $tok"
+                }
+            }
+        }
+
+        Write-Host ""
+        foreach ($t in $Tools) {
+            $mark = if ($sel[$t.Name]) { 'x' } else { ' ' }
+            $inst = if (Test-ToolInstalled $t.Name) { ' (already installed)' } else { '' }
+            Write-Host ("   [{0}] {1,-26} {2,6} MB{3}" -f $mark, $t.Label, $t.SizeMB, $inst)
+        }
+        $cur = 0
+        foreach ($k in $sel.Keys) { if ($sel[$k]) { $cur += ($Tools | Where-Object Name -eq $k).SizeMB } }
+        Write-Host ("   selected total: {0} MB" -f $cur) -ForegroundColor Cyan
+        Write-Host ""
+    }
+    return ($sel.Keys | Where-Object { $sel[$_] })
+}
+
+function Show-SpaceCheck {
+    param([string[]] $Names)
+    $need = 0
+    foreach ($n in $Names) {
+        $t = $Tools | Where-Object Name -eq $n
+        if ($t) { $need += $t.SizeMB }
+    }
+    # downloads are staged on the same drive, so allow roughly double
+    $needWithStaging = [int]($need * 1.4) + 2048
+
+    $rootPath = if ($Root.Length -ge 2) { $Root.Substring(0, 2) } else { $Root }
+    $drive = $rootPath.TrimEnd('\')
+    $freeGB = 0
+    try {
+        $psd = Get-PSDrive -Name $drive.TrimEnd(':') -ErrorAction Stop
+        $freeGB = [int]($psd.Free / 1GB)
+    } catch { }
+
+    Write-Host ""
+    Write-Host ("  Selected : {0} tool(s), about {1} MB installed" -f $Names.Count, $need)
+    Write-Host ("  Needs    : about {0} MB free (includes download staging)" -f $needWithStaging)
+    Write-Host ("  Free on {0,-6} : {1} GB" -f $drive, $freeGB)
+
+    if ($freeGB -gt 0 -and ($freeGB * 1024) -lt $needWithStaging) {
+        Write-Host ""
+        Write-Err2 "Not enough free space on ${drive}:."
+        Write-Host "       Need about $([int]($needWithStaging/1024)) GB, have $freeGB GB."
+        Write-Host "       Remove some tools from the selection and try again."
+        return $false
+    }
+    Write-Host ""
+    return $true
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if ($List) { Show-Catalogue; exit 0 }
+
+$seven = Find-7z
+if (-not $seven) {
+    Write-Err2 "7-Zip is required to unpack the tool archives."
+    Write-Host "       Install it from https://www.7-zip.org and re-run."
+    exit 1
+}
+
+# ---- decide the selection -------------------------------------------------
+$selected = @()
+
+if ($Minimal) {
+    $selected = @('opencode')
+}
+elseif ($All) {
+    $selected = @($Tools | ForEach-Object { $_.Name })
+}
+elseif ($Only) {
+    $wanted = $Only -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ }
+    $bad = $wanted | Where-Object { $_ -notin $Tools.Name }
+    if ($bad) { Write-Err2 "Unknown tool(s): $($bad -join ', ')"; exit 1 }
+    $selected = @($wanted)
+}
+else {
+    $selected = Select-Tools
+}
+
+if (@($selected).Count -eq 0) {
+    Write-Host "`n  Nothing selected. Exiting.`n"
+    exit 0
+}
+
+# OpenCode itself is the point of the bundle - always include it
+if ('opencode' -notin $selected) {
+    Write-Warn2 "adding OpenCode itself to the selection"
+    $selected = @('opencode') + $selected
+}
+
+# android needs a JDK to run sdkmanager
+if ('android' -in $selected -and 'jdk' -notin $selected -and -not (Test-ToolInstalled 'jdk')) {
+    Write-Warn2 "Android SDK requires the JDK - adding it"
+    $selected = $selected + 'jdk'
+}
+
+# ---- space check ----------------------------------------------------------
+if (-not (Show-SpaceCheck -Names $selected)) { exit 1 }
+
+# ---- skip already installed ----------------------------------------------
+if (-not $Force) {
+    $already = @($selected | Where-Object { Test-ToolInstalled $_ })
+    if ($already) {
+        foreach ($a in $already) {
+            Write-Warn2 "$a already installed - skipping (use -Force to reinstall)"
+        }
+        $selected = @($selected | Where-Object { $_ -notin $already })
+    }
+}
+if (@($selected).Count -eq 0) {
+    Write-Host "`n  Nothing to do - everything selected is already installed.`n"
+    exit 0
+}
+
+# ---- resolve URLs ---------------------------------------------------------
+Write-Step "Resolving download URLs"
+$urls = @{}
+foreach ($n in $selected) {
+    try {
+        $u = Resolve-Url -Name $n
+        if (-not $u) { throw "could not resolve a download URL" }
+        $urls[$n] = $u
+        Write-Ok ("{0,-9} {1}" -f $n, $u)
+    } catch {
+        Write-Err2 "$n : $($_.Exception.Message)"
+        $urls[$n] = $null
+    }
+}
+
+# ---- download in parallel -------------------------------------------------
+$downloadable = @($selected | Where-Object { $urls[$_] })
+Write-Step "Downloading $($downloadable.Count) item(s) in parallel"
+
+$jobs = foreach ($n in $downloadable) {
+    $dest = Join-Path $DlDir (Get-ArchiveName -Name $n -Url $urls[$n])
+    Start-Job -Name $n -ArgumentList $urls[$n], $dest -ScriptBlock {
+        param($u, $d)
+        $ProgressPreference = 'SilentlyContinue'
+        try {
+            Invoke-WebRequest -Uri $u -OutFile $d -UseBasicParsing -TimeoutSec 3600
+            "OK"
+        } catch {
+            "FAIL $($_.Exception.Message)"
+        }
+    }
+}
+
+$downloadOk = @{}
+foreach ($j in $jobs) {
+    $r = Receive-Job -Job $j -Wait -AutoRemoveJob 2>$null
+    if ($r -match '^OK') {
+        $downloadOk[$j.Name] = $true
+        Write-Ok "$($j.Name) downloaded"
+    } else {
+        $downloadOk[$j.Name] = $false
+        Write-Err2 "$($j.Name) download failed : $r"
+    }
+}
+
+# ---- install --------------------------------------------------------------
+Write-Step "Installing"
+$installers = @{
+    'opencode' = { param($a) Install-OpenCode $a }
+    'vscode'   = { param($a) Install-Vscode   $a }
+    'jdk'      = { param($a) Install-Jdk      $a }
+    'go'       = { param($a) Install-Go       $a }
+    'node'     = { param($a) Install-Node     $a }
+    'maven'    = { param($a) Install-Maven    $a }
+    'git'      = { param($a) Install-Git      $a }
+    'dotnet'   = { param($a) Install-Dotnet   $a }
+    'python'   = { param($a) Install-Python   $a }
+    'rust'     = { param($a) Install-Rust     $a }
+    'android'  = { param($a) Install-Android  $a }
+}
+
+$succeeded = @()
+$failed    = @()
+
+foreach ($n in $selected) {
+    if (-not $downloadOk.ContainsKey($n) -or -not $downloadOk[$n]) {
+        $failed = @($failed) + $n
+        continue
+    }
+    $archive = Join-Path $DlDir (Get-ArchiveName -Name $n -Url $urls[$n])
+    try {
+        & $installers[$n] $archive
+        $succeeded = @($succeeded) + $n
+    } catch {
+        Write-Err2 "$n : $($_.Exception.Message)"
+        $failed = @($failed) + $n
+    }
+}
+
+# ---- cleanup staging ------------------------------------------------------
+if (Test-Path $UnpackDir) {
+    Remove-Item $UnpackDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---- summary --------------------------------------------------------------
+Write-Step "Summary"
+# NOTE: do not name this $all - that collides with the -All switch parameter
+# (PowerShell variable names are case-insensitive).
+$allTools = @($succeeded) + @($failed)
+foreach ($n in $allTools) {
+    $t = $Tools | Where-Object Name -eq $n
+    if ($n -in $succeeded) { Write-Host ("    installed  {0,-10} {1,-26} {2,6} MB" -f $n, $t.Label, $t.SizeMB) -ForegroundColor Green }
+    else                  { Write-Host ("    FAILED     {0,-10} {1,-26}" -f $n, $t.Label) -ForegroundColor Red }
+}
+
+$totalMB = ($Tools | Where-Object { $_.Name -in $succeeded } | Measure-Object SizeMB -Sum).Sum
+Write-Host ""
+Write-Host ("    {0} installed, {1} failed, about {2} MB on disk" -f $succeeded.Count, $failed.Count, $totalMB) -ForegroundColor Cyan
+Write-Host ""
+
+if ($succeeded.Count -gt 0) {
+    Write-Host "  Next steps:" -ForegroundColor White
+    Write-Host "    1. Run bin\Verify.cmd to confirm every path is isolated."
+    Write-Host "    2. Run Launch.cmd to start OpenCode."
+    Write-Host ""
+    Write-Host "  Note: bin\env.cmd builds PATH at launch time, so newly installed"
+    Write-Host "        tools are picked up automatically - no edit needed."
+    Write-Host ""
+}
+
+if ($failed.Count -gt 0) { exit 1 }
+exit 0

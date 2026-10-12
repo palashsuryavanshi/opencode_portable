@@ -18,9 +18,10 @@ downloads/*.nupkg
 downloads/_unpack/
 downloads/_update_stage/
 
-# Build intermediates
-build/
-
+# Build scripts ship with the release; only heavy artifacts inside are ignored
+build/**
+!build/*.sh
+!build/*.ps1
 # User data (empty dirs kept via .gitkeep, content ignored)
 data/opencode-data/opencode/*
 !data/opencode-data/opencode/.gitkeep

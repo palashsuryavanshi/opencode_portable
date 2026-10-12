@@ -41,18 +41,63 @@ Complete portable development environment for Windows. Run from USB without inst
    - **8** — Verify portable setup
    - **9** — Update OpenCode
 
-## First Run — Install Tools
+## First Run — Install the Tools You Want
 
-The repository contains launchers and build scripts. Tools are downloaded on first use:
+The full bundle is about **5 GB installed**. You almost certainly do not need all
+of it, so the installer lets you pick. Run this from the portable root:
 
-```cmd
-# From the portable root directory:
+```powershell
+powershell -ExecutionPolicy Bypass -File build\install-selected-tools.ps1
+```
+
+You get a toggle list with the size of each toolchain and a running total:
+
+```
+  #   Tool                          Size  Notes
+  1   OpenCode GUI + CLI            740 MB  The AI coding assistant (required)
+  2   VS Code (portable)           1030 MB  Portable ZIP edition, data on the stick
+  3   Temurin JDK 21 LTS            330 MB  Java, needed for Android and Gradle
+  4   Android SDK                   655 MB  cmdline-tools, platform-tools, build-tools 34/35
+  ...
+```
+
+Enter numbers to toggle, `a` for all, `n` for none. Before downloading it checks
+free space on the USB, then fetches the selected items in parallel and verifies
+each one afterwards. Already-installed tools are skipped.
+
+### Non-interactive
+
+```powershell
+.\build\install-selected-tools.ps1 -Minimal                  # OpenCode only (~740 MB)
+.\build\install-selected-tools.ps1 -Only "jdk,node,go"       # pick specific toolchains
+.\build\install-selected-tools.ps1 -All                       # everything
+.\build\install-selected-tools.ps1 -List                      # show the catalogue, install nothing
+.\build\install-selected-tools.ps1 -Only "jdk" -Force         # reinstall even if present
+.\build\install-selected-tools.ps1 -Only "android" -NoAndroid # cmdline-tools only, skip packages
+```
+
+OpenCode itself is always included. Choosing Android automatically pulls in the
+JDK, because the SDK manager will not run without it.
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | interactive toggle list |
+| `-All` | install everything, unattended |
+| `-Minimal` | OpenCode only |
+| `-Only "a,b,c"` | install exactly these toolchains |
+| `-Force` | reinstall tools that are already present |
+| `-List` | print the catalogue and exit |
+| `-NoAndroid` | install Android cmdline-tools but skip the SDK packages |
+
+### Installing everything the old way
+
+The original three-stage scripts still work if you prefer them:
+
+```powershell
 PowerShell -ExecutionPolicy Bypass -File build\fetch-tools.ps1
 PowerShell -ExecutionPolicy Bypass -File build\install-tools.ps1
 PowerShell -ExecutionPolicy Bypass -File build\setup-android.ps1
 ```
-
-This downloads ~2 GB and installs to `apps/`. Only needed once per USB.
 
 ## Features
 
@@ -117,6 +162,7 @@ opencode-portable/
 │   └── backups/            # Session snapshots
 ├── projects/               # Your code goes here
 ├── build/                  # Build scripts
+│   ├── install-selected-tools.ps1 # pick which toolchains to install (start here)
 │   ├── fetch-tools.ps1     # Download tool installers
 │   ├── install-tools.ps1   # Extract to apps/
 │   └── setup-android.ps1   # Install Android SDK packages
