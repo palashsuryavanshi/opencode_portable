@@ -95,7 +95,14 @@ function Write-Err2  { param([string]$m) Write-Host "    [FAIL] $m" -ForegroundC
 # Helpers
 # ---------------------------------------------------------------------------
 function Find-7z {
-    $c = Get-Command 7z -ErrorAction SilentlyContinue
+    # Prefer the 7-Zip bundled inside the portable (apps\7zip\7za.exe). It is a
+    # standalone build, so it works on a machine where 7-Zip was never installed
+    # and nothing needs to be added to the host.
+    $bundled = Join-Path $AppsDir '7zip\7za.exe'
+    if (Test-Path $bundled) { return $bundled }
+
+    # Fall back to whatever the host happens to have.
+    $c = Get-Command 7z, 7za -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($c) { return $c.Source }
     foreach ($p in @(
         "$env:ProgramFiles\7-Zip\7z.exe",
@@ -103,6 +110,35 @@ function Find-7z {
         "$env:LOCALAPPDATA\Programs\7-Zip\7z.exe"
     )) { if (Test-Path $p) { return $p } }
     return $null
+}
+
+# Unpack the OpenCode NSIS installer.
+#
+# Layout depends on which 7-Zip build is used:
+#   * full 7z.exe  ->  $PLUGINSDIR\app-64.7z  (a second archive to unpack)
+#   * bundled 7za  ->  the app files appear directly at the top level
+# Handle both, otherwise the updater appears to succeed but installs nothing.
+function Expand-OpenCodeNsis {
+    param([string] $Installer, [string] $Dest)
+
+    $seven = Find-7z
+    $stage = Join-Path $UnpackDir 'opencode-nsis'
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+
+    & $seven x $Installer "-o$stage" -y | Out-Null
+
+    $inner = Join-Path $stage '$PLUGINSDIR\app-64.7z'
+    if (Test-Path $inner) {
+        Expand-ArchiveSmart -Archive $inner -Dest $Dest -StripWrapper $false
+    } elseif (Test-Path (Join-Path $stage 'OpenCode.exe')) {
+        if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+        Get-ChildItem $stage -Force | ForEach-Object { Move-Item $_.FullName -Destination $Dest -Force }
+    } else {
+        throw "could not find OpenCode.exe in the installer payload"
+    }
+
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # Expand an archive. $StripWrapper moves the contents of the single wrapper
@@ -276,17 +312,7 @@ function Get-ArchiveName {
 # ---------------------------------------------------------------------------
 function Install-OpenCode {
     param([string]$Archive)
-    $seven = Find-7z
-    $stage = Join-Path $UnpackDir 'opencode'
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-
-    # The NSIS installer wraps the payload in $PLUGINSDIR\app-64.7z
-    & $seven x $Archive "-o$stage" -y | Out-Null
-    $app7z = Join-Path $stage '$PLUGINSDIR\app-64.7z'
-    if (-not (Test-Path $app7z)) { throw "app-64.7z not found inside the NSIS payload" }
-
-    Expand-ArchiveSmart -Archive $app7z -Dest (Join-Path $AppsDir 'opencode') -StripWrapper $false
-    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-OpenCodeNsis -Installer $Archive -Dest (Join-Path $AppsDir 'opencode')
 
     # Verify the bundled CLI too - the GUI depends on it
     $cli = Join-Path $AppsDir 'opencode\resources\opencode-cli.exe'

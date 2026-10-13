@@ -9,7 +9,7 @@
 #>
 
 param(
-  [string]$PortableRoot = (Split-Path (Split-Path $PSScriptRoot)),
+  [string]$PortableRoot = (Split-Path $PSScriptRoot),
   [string]$DownloadUrl = "https://opencode.ai/download/stable/windows-x64-nsis",
   [switch]$Force,
   [switch]$NoBackup
@@ -26,7 +26,31 @@ Write-Host ""
 $appsDir     = Join-Path $PortableRoot 'apps'
 $opencodeDir = Join-Path $appsDir 'opencode'
 $stageDir    = Join-Path $PortableRoot 'downloads\_update_stage'
+# Deliberately a sibling of $stageDir, not a child: enumerating $stageDir while
+# $newAppDir sits inside it would pick up app-new and try to move it into itself.
+$newAppDir   = Join-Path $PortableRoot 'downloads\_app_new'
 $installerPath = Join-Path $PortableRoot 'downloads\opencode-update.exe'
+
+# Prefer the 7-Zip bundled inside the portable (apps\7zip\7za.exe). It is a
+# standalone build, so the updater works on a machine that has never had
+# 7-Zip installed and nothing is added to the host.
+function Resolve-7z {
+    $bundled = Join-Path $PortableRoot 'apps\7zip\7za.exe'
+    if (Test-Path $bundled) { return $bundled }
+    $c = Get-Command 7z, 7za -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    foreach ($q in @("$env:ProgramFiles\7-Zip\7z.exe",
+                     "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if (Test-Path $q) { return $q }
+    }
+    return $null
+}
+
+$sevenZip = Resolve-7z
+if (-not $sevenZip) {
+    Write-Error "No 7-Zip found. Expected the bundled copy at apps\7zip\7za.exe."
+    exit 1
+}
 
 # --- 1. Check current version ---
 $currentVer = "unknown"
@@ -58,25 +82,37 @@ try {
 Write-Host ""
 Write-Host "  Extracting..."
 
-if (Test-Path (Join-Path $stageDir '$PLUGINSDIR')) {
-  Remove-Item (Join-Path $stageDir '$PLUGINSDIR') -Recurse -Force
-}
-if (Test-Path (Join-Path $stageDir '$R0')) {
-  Remove-Item (Join-Path $stageDir '$R0') -Recurse -Force
-}
+# Wipe the whole staging area. Removing only the NSIS folders left stale
+# app-new\ contents behind after a failed run, and the next run then failed
+# trying to move a directory onto a directory that already existed.
+if (Test-Path $stageDir)    { Remove-Item $stageDir    -Recurse -Force }
+if (Test-Path $newAppDir)   { Remove-Item $newAppDir   -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
-& 7z x $installerPath -o"$stageDir" -y | Out-Null
+# The payload layout depends on which 7-Zip build is used:
+#   * full 7z.exe -> $PLUGINSDIR\app-64.7z, a second archive to unpack
+#   * bundled 7za -> the app files appear directly at the top level
+# Handle both, otherwise the update appears to succeed but installs nothing.
+& $sevenZip x $installerPath -o"$stageDir" -y | Out-Null
+
+# Deliberately a sibling of $stageDir, not a child: enumerating $stageDir while
+# $newAppDir sits inside it would pick up app-new and try to move it into itself.
 
 $app7z = Join-Path $stageDir '$PLUGINSDIR\app-64.7z'
-if (-not (Test-Path $app7z)) {
-  Write-Error "Could not find app-64.7z in extracted installer. Installer format may have changed."
-  exit 1
-}
 
-# --- 4. Extract app-64.7z to staging ---
-Write-Host "  Extracting app archive..."
-$newAppDir = Join-Path $stageDir 'app-new'
-& 7z x $app7z -o"$newAppDir" -y | Out-Null
+if (Test-Path $app7z) {
+    Write-Host "  Extracting app archive..."
+    & $sevenZip x $app7z -o"$newAppDir" -y | Out-Null
+} elseif (Test-Path (Join-Path $stageDir 'OpenCode.exe')) {
+    Write-Host "  App payload found directly in the installer."
+    if (Test-Path $newAppDir) { Remove-Item $newAppDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $newAppDir | Out-Null
+    Get-ChildItem $stageDir -Force |
+        ForEach-Object { Move-Item $_.FullName -Destination $newAppDir -Force }
+} else {
+    Write-Error "Could not locate the OpenCode payload. The installer format may have changed."
+    exit 1
+}
 
 # --- 5. Verify extracted app ---
 $newExe = Join-Path $newAppDir 'OpenCode.exe'
@@ -96,7 +132,9 @@ if ($currentVer -eq $newVer -and -not $Force) {
 }
 
 # --- 6. Backup current opencode (optional) ---
-if (-not $NoBackup) {
+# Only back up if there is something installed to back up. On a fresh install
+# apps\opencode does not exist yet, and copying it would abort the update.
+if (-not $NoBackup -and (Test-Path $opencodeDir)) {
   $backupDir = Join-Path $PortableRoot "data\backups\opencode-$currentVer-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
   Write-Host ""
   Write-Host "  Backing up current opencode to: $backupDir"
@@ -124,7 +162,7 @@ Write-Host "  User data preserved in: $PortableRoot\data\"
 Write-Host "========================================================"
 
 # --- 9. Cleanup ---
-Remove-Item $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $stageDir, $newAppDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
 Write-Host ""

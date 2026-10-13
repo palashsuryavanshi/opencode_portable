@@ -191,6 +191,7 @@ opencode-portable/
 │   ├── install-tools.ps1           extract everything
 │   └── setup-android.ps1           Android SDK packages
 ├── apps/                       installed toolchains
+│   └── 7zip/                   bundled standalone 7-Zip (no host install needed)
 ├── data/                       everything persistent
 │   ├── opencode-data/          chat sessions
 │   ├── opencode-config/        settings, providers, auth
@@ -235,8 +236,11 @@ time. This is one-off per machine.
 - Windows 10 or 11, 64-bit
 - A USB drive — budget 1 GB for OpenCode alone, 6 GB for everything
 - Internet access on first run, for downloads
-- **7-Zip** must be installed on the host, because the tool archives are unpacked
-  with `7z`
+
+**No 7-Zip needed.** A standalone copy is bundled at `apps\7zip\7za.exe` and the
+installers prefer it over anything on the host, so the portable unpacks its own
+archives even on a machine where 7-Zip was never installed. Nothing is added to
+Windows, and nothing is registered.
 
 ---
 

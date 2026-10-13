@@ -12,17 +12,33 @@ $apps = Join-Path $Root 'apps'
 $tmp  = Join-Path $Root 'downloads\_unpack'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
+# Prefer the 7-Zip bundled inside the portable (apps\7zip\7za.exe) so that no
+# 7-Zip installation is required on the host.
+function Resolve-7z {
+    $bundled = Join-Path $PortableRoot 'apps\7zip\7za.exe'
+    if (Test-Path $bundled) { return $bundled }
+    $c = Get-Command 7z, 7za -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    foreach ($q in @("$env:ProgramFiles\7-Zip\7z.exe",
+                     "${env:ProgramFiles(x86)}\7-Zip\7z.exe")) {
+        if (Test-Path $q) { return $q }
+    }
+    return $null
+}
+$SevenZip = Resolve-7z
+if (-not $SevenZip) { Write-Error 'No 7-Zip found (expected apps\7zip\7za.exe).'; exit 1 }
+
 function Expand-To($zip, $dest, $strip = $false) {
   if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
   if ($strip) {
     $stage = Join-Path $tmp ([guid]::NewGuid().ToString('N'))
-    & 7z x $zip "-o$stage" -y | Out-Null
+    & $SevenZip x $zip "-o$stage" -y | Out-Null
     $child = Get-ChildItem $stage -Directory | Select-Object -First 1
     robocopy $child.FullName $dest /E /NFL /NDL /NJH /NJS /NP | Out-Null
     Remove-Item $stage -Recurse -Force
   } else {
-    & 7z x $zip "-o$dest" -y | Out-Null
+    & $SevenZip x $zip "-o$dest" -y | Out-Null
   }
   "  installed -> $dest"
 }
@@ -53,7 +69,7 @@ Expand-To (Join-Path $dl 'portablegit.exe') (Join-Path $apps 'git') $false
 # Android command-line tools must end up at cmdline-tools\latest\bin
 $stage = Join-Path $tmp 'androidcmd'
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-& 7z x (Join-Path $dl 'androidcmd.zip') "-o$stage" -y | Out-Null
+& $SevenZip x (Join-Path $dl 'androidcmd.zip') "-o$stage" -y | Out-Null
 $sdk = Join-Path $apps 'android-sdk'
 Remove-Item (Join-Path $sdk 'cmdline-tools') -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path (Join-Path $sdk 'cmdline-tools') | Out-Null
