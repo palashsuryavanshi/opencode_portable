@@ -1,0 +1,4 @@
+# Normalize line endings so ZIP copies, git checkouts and other platforms
+# produce identical file content. The repo stores LF; checkouts get the
+# platform default (CRLF on Windows).
+* text=auto
