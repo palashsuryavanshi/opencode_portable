@@ -115,9 +115,13 @@ if (Test-Path $app7z) {
 }
 
 # --- 5. Verify extracted app ---
+# resources\opencode-cli.exe is the binary the desktop app spawns for every
+# request. A payload without it installs "successfully" and then fails with
+# "spawn ...\resources\opencode-cli.exe ENOENT", so check it up front.
 $newExe = Join-Path $newAppDir 'OpenCode.exe'
-if (-not (Test-Path $newExe)) {
-  Write-Error "OpenCode.exe not found in extracted app."
+$newCli = Join-Path $newAppDir 'resources\opencode-cli.exe'
+if (-not (Test-Path $newExe) -or -not (Test-Path $newCli)) {
+  Write-Error "The extracted app is incomplete (OpenCode.exe or resources\opencode-cli.exe missing)."
   exit 1
 }
 
@@ -131,9 +135,49 @@ if ($currentVer -eq $newVer -and -not $Force) {
   exit 0
 }
 
-# --- 6. Backup current opencode (optional) ---
+# --- 6. Stop the app before touching the install ---
+# Windows refuses to delete files that are in use. If OpenCode is running,
+# Remove-Item deletes what it can and fails on the rest, and the following
+# Move-Item then nests the new app inside the half-empty folder
+# (apps\opencode\_app_new). That is exactly how a 2.1.3 -> 2.1.4 update broke
+# a portable install: resources\opencode-cli.exe was gone afterwards and the
+# desktop failed with "spawn ...\resources\opencode-cli.exe ENOENT".
+function Get-PortableProcesses {
+    param([string]$Dir)
+    @(Get-Process | Where-Object {
+        $p = $null
+        try { $p = $_.Path } catch { $p = $null }
+        $p -and $p.StartsWith($Dir, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
+$running = Get-PortableProcesses $opencodeDir
+if ($running.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Stopping OpenCode processes from the stick..."
+    foreach ($p in $running) { Write-Host "    $($p.ProcessName) ($($p.Id))" }
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 20 -and (Get-PortableProcesses $opencodeDir).Count -gt 0; $i++) {
+        Start-Sleep -Milliseconds 250
+    }
+    if ((Get-PortableProcesses $opencodeDir).Count -gt 0) {
+        Write-Error "OpenCode is still running from $opencodeDir. Close it and run the updater again."
+        exit 1
+    }
+}
+
+# Anything named _app_new inside the install is left over from an earlier
+# failed swap - the payload we are about to install lives in downloads\.
+$staleDir = Join-Path $opencodeDir '_app_new'
+if (Test-Path $staleDir) {
+    Write-Host "  Removing stale $staleDir"
+    Remove-Item $staleDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- 7. Backup current opencode (optional) ---
 # Only back up if there is something installed to back up. On a fresh install
 # apps\opencode does not exist yet, and copying it would abort the update.
+$backupDir = $null
 if (-not $NoBackup -and (Test-Path $opencodeDir)) {
   $backupDir = Join-Path $PortableRoot "data\backups\opencode-$currentVer-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
   Write-Host ""
@@ -141,16 +185,40 @@ if (-not $NoBackup -and (Test-Path $opencodeDir)) {
   Copy-Item $opencodeDir $backupDir -Recurse -Force
 }
 
-# --- 7. Replace apps/opencode ---
+# --- 8. Replace apps/opencode ---
 Write-Host ""
 Write-Host "  Installing new version..."
 
-# Remove old (keep data/ separate so sessions survive)
-Remove-Item $opencodeDir -Recurse -Force -ErrorAction SilentlyContinue
+# Remove old (keep data/ separate so sessions survive). Retry a few times:
+# antivirus scanners can hold a handle for a second or two after the app exits.
+for ($i = 0; $i -lt 5 -and (Test-Path $opencodeDir); $i++) {
+    Remove-Item $opencodeDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $opencodeDir) { Start-Sleep -Seconds 1 }
+}
+if (Test-Path $opencodeDir) {
+    Write-Error "Could not remove $opencodeDir - a file is still in use. Nothing was replaced; the old install is intact."
+    exit 1
+}
+
+# Move-Item nests the source when the destination exists, so the check above
+# guarantees this is a clean rename and not apps\opencode\_app_new.
 Move-Item $newAppDir $opencodeDir -Force
 
-# --- 8. Verify ---
-$checkVi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $opencodeDir 'OpenCode.exe'))
+# --- 9. Verify ---
+$checkExe = Join-Path $opencodeDir 'OpenCode.exe'
+$checkCli = Join-Path $opencodeDir 'resources\opencode-cli.exe'
+if (-not (Test-Path $checkExe) -or -not (Test-Path $checkCli)) {
+    Write-Error "Install verification failed: OpenCode.exe or resources\opencode-cli.exe is missing."
+    if ($backupDir -and (Test-Path $backupDir)) {
+        Write-Host "  Rolling back to $currentVer ..."
+        Remove-Item $opencodeDir -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item $backupDir $opencodeDir -Recurse -Force
+        Write-Host "  Rollback complete - $currentVer is installed again."
+    }
+    exit 1
+}
+
+$checkVi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($checkExe)
 $checkVer = "$($checkVi.FileMajorPart).$($checkVi.FileMinorPart).$($checkVi.FileBuildPart)"
 
 Write-Host ""
@@ -161,7 +229,7 @@ Write-Host "  New version: $checkVer"
 Write-Host "  User data preserved in: $PortableRoot\data\"
 Write-Host "========================================================"
 
-# --- 9. Cleanup ---
+# --- 10. Cleanup ---
 Remove-Item $stageDir, $newAppDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 

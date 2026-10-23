@@ -71,6 +71,12 @@ if exist "%PORTABLE_ROOT%\apps\opencode\OpenCode.exe" (
   echo      FAIL OpenCode GUI missing
   set "FAIL=1"
 )
+if exist "%PORTABLE_ROOT%\apps\opencode\resources\opencode-cli.exe" (
+  echo      ok   OpenCode CLI backend
+) else (
+  echo      FAIL OpenCode CLI backend missing - run Update-OpenCode.cmd
+  set "FAIL=1"
+)
 echo.
 
 echo  ================================================================
