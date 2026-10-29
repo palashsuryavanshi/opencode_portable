@@ -20,7 +20,7 @@ echo    6.  Android SDK Manager
 echo    7.  Sessions               --  backup / restore / list / import
 echo    8.  Verify portable setup
 echo    9.  Update OpenCode        --  download and install latest stable
-echo   10.  Manage tools           --  add / remove toolchains (VS Code, Python, ...)
+echo    a.  Manage tools           --  add / remove toolchains (VS Code, Python, ...)
 echo    0.  Exit
 echo.
 set "CHOICE="
@@ -50,7 +50,7 @@ if "%CHOICE%"=="6" ( call "%ROOT%bin\Android.cmd"     & pause & goto menu )
 if "%CHOICE%"=="7" ( call "%ROOT%bin\Sync.cmd"        & goto menu )
 if "%CHOICE%"=="8" ( call "%ROOT%bin\Verify.cmd"      & pause & goto menu )
 if "%CHOICE%"=="9" ( call "%ROOT%bin\Update-OpenCode.cmd" & goto menu )
-if "%CHOICE%"=="10" ( call "%ROOT%bin\Manage-Tools.cmd" & goto menu )
+if /i "%CHOICE%"=="a" ( call "%ROOT%bin\Manage-Tools.cmd" & goto menu )
 if "%CHOICE%"=="0" exit /b 0
 
 echo   Invalid choice.

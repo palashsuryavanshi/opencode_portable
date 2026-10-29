@@ -80,7 +80,7 @@ space on the drive before downloading, fetches your selection in parallel, and
 
 ### Managing installed tools
 
-`Launch.cmd` → **10** opens the add/remove menu (`bin\Manage-Tools.cmd`):
+`Launch.cmd` → **a** opens the add/remove menu (`bin\Manage-Tools.cmd`):
 
 | Action | Command |
 |---|---|
@@ -125,8 +125,11 @@ Double-click **`Launch.cmd`**.
 | **7** | Sessions — backup / restore / list / import |
 | **8** | Verify portable setup |
 | **9** | Update OpenCode |
-| **10** | Manage tools - add / remove toolchains, clear cached installers |
+| **a** | Manage tools - add / remove toolchains, clear cached installers |
 | **0** | Exit |
+
+Keys past 9 are letters (**a**, **b**, ...) so each entry stays a single
+keystroke; **0** always exits.
 
 ---
 
