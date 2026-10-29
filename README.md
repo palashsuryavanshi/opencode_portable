@@ -80,22 +80,25 @@ space on the drive before downloading, fetches your selection in parallel, and
 
 ### Managing installed tools
 
-`Launch.cmd` → **6** opens the tool menu (`bin\Manage-Tools.cmd`). Everything
-tool-related lives there: installing, removing, clearing downloads, and
-launching the tool-facing apps.
+`Launch.cmd` → **7** opens the tool menu (`bin\Manage-Tools.cmd`). Everything
+tool-related lives there: installing, removing, updating, clearing downloads,
+and launching the tool-facing apps.
 
 | Action | Command |
 |---|---|
 | Interactive menu | `bin\Manage-Tools.cmd` |
 | Show what is installed and how much space it uses | `bin\Manage-Tools.cmd -List` |
 | Install tools | `bin\Manage-Tools.cmd -Add "python,go"` |
+| Update every installed toolchain | `bin\Manage-Tools.cmd -Update` |
 | Remove tools | `bin\Manage-Tools.cmd -Remove "vscode,dotnet"` |
 | Delete cached installers | `bin\Manage-Tools.cmd -ClearDownloads` |
 | Launch an app | `bin\Manage-Tools.cmd -Launch vscode` (also `shell`, `bash`, `android`) |
 
 Inside the menu, **1-9** then **a, b, ...** select a toolchain to add or remove
 (after 9 the numbering switches to letters, so it never needs two keystrokes).
-Single letters from the launch block start the tool-facing apps:
+Single letters from the launch block start the tool-facing apps, and **u**
+re-downloads every installed toolchain (OpenCode itself is handled by its own
+updater):
 
 | Key | Launches |
 |---|---|
@@ -112,6 +115,11 @@ today and reinstall it later without losing work. OpenCode itself cannot be
 removed from the menu - use **5** (Update OpenCode) to reinstall or update it.
 If a tool is running, the manager refuses to delete it; close it first, or pass
 `-Force`.
+
+Every install and update is self-cleaning: the downloaded installers are deleted
+once the new files are in place, and only the **newest** backup of each kind is
+kept in `data\backups\` (sessions, host import, and the previous OpenCode
+install).
 
 Some useful combinations:
 
@@ -137,12 +145,16 @@ Double-click **`Launch.cmd`**.
 | **2** | OpenCode CLI (TUI) — same sessions as the GUI |
 | **3** | Sessions — backup / restore / list / import |
 | **4** | Verify portable setup |
-| **5** | Update OpenCode |
-| **6** | Manage tools - install / remove / launch toolchains, clear cached installers |
+| **5** | Update OpenCode — latest app, then every installed toolchain |
+| **6** | Update tools — re-download the installed toolchains only |
+| **7** | Manage tools - install / remove / launch toolchains, clear cached installers |
 | **0** | Exit |
 
-Everything tool-related is under **6**: VS Code, Developer Shell, Git Bash,
-Android SDK Manager, and adding/removing any toolchain.
+Everything tool-related is under **6** and **7**: VS Code, Developer Shell,
+Git Bash, Android SDK Manager, and adding/removing/updating any toolchain.
+Option **5** updates the app and then calls the same tool refresh, so one
+choice brings the whole stick up to date; either way the downloaded installers
+are deleted afterwards.
 
 Numbers run **1-9**; only entries past 9 become letters (**a**, **b**, ...), so
 each choice stays a single keystroke. **0** always exits.
@@ -189,21 +201,27 @@ travels with the drive.
   (`~\.local\share\opencode`)
 
 Close OpenCode before backing up or restoring. The database runs in WAL mode, and
-copying it while OpenCode is writing can produce a torn copy.
+copying it while OpenCode is writing can produce a torn copy. Each backup is a
+full copy, so only the newest one of each kind is kept — older snapshots are
+deleted automatically after a new one is written.
 
 ---
 
 ## Updating
 
 ```powershell
-bin\Update-OpenCode.cmd          # or Launch.cmd -> 5
+bin\Update-OpenCode.cmd -UpdateTools   # or Launch.cmd -> 5
+bin\Manage-Tools.cmd -Update           # or Launch.cmd -> 6 (tools only)
 ```
 
-Downloads the latest stable OpenCode from
+Option **5** downloads the latest stable OpenCode from
 [opencode.ai](https://opencode.ai/download/stable/windows-x64-nsis), backs up
-the current copy into `data\backups\`, and leaves all user data untouched.
-
-Other tools update by re-running the installer with `-Force`.
+the current copy into `data\backups\`, leaves all user data untouched, and then
+re-downloads every installed toolchain. Option **6** does the tool refresh on
+its own. Afterwards the downloaded installers and the staging folders are
+deleted, and older `data\backups\opencode-*` snapshots are pruned, so an update
+never leaves hundreds of MB of leftovers behind. Tools installed via option
+**7** can also be refreshed individually with **u** in the tool menu.
 
 ---
 

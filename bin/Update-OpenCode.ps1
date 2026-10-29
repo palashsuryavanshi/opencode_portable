@@ -5,14 +5,19 @@
 
   Usage:
     PowerShell -ExecutionPolicy Bypass -File bin\Update-OpenCode.ps1
-    # or from Launch.cmd menu (to be added)
+    PowerShell -ExecutionPolicy Bypass -File bin\Update-OpenCode.ps1 -UpdateTools
+    # -UpdateTools also refreshes every installed toolchain (Launch.cmd option 5)
+
+  Housekeeping: after any update the downloaded installers, the staging folders
+  and all but the newest data\backups\opencode-* snapshot are deleted.
 #>
 
 param(
   [string]$PortableRoot = (Split-Path $PSScriptRoot),
   [string]$DownloadUrl = "https://opencode.ai/download/stable/windows-x64-nsis",
   [switch]$Force,
-  [switch]$NoBackup
+  [switch]$NoBackup,
+  [switch]$UpdateTools
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +35,57 @@ $stageDir    = Join-Path $PortableRoot 'downloads\_update_stage'
 # $newAppDir sits inside it would pick up app-new and try to move it into itself.
 $newAppDir   = Join-Path $PortableRoot 'downloads\_app_new'
 $installerPath = Join-Path $PortableRoot 'downloads\opencode-update.exe'
+$backupsDir  = Join-Path $PortableRoot 'data\backups'
+$dlDir       = Join-Path $PortableRoot 'downloads'
+
+$backupHelper = Join-Path $PSScriptRoot 'backup-utils.ps1'
+if (Test-Path $backupHelper) { . $backupHelper }
+
+# An app backup is a full copy of the install (~600 MB), so keeping a long
+# history fills the stick. Keep the newest one; the live install plus data\ are
+# the real state, the backup is just a one-step rollback.
+function Remove-OldAppBackups {
+    if (-not (Get-Command Remove-OldBackups -ErrorAction SilentlyContinue)) { return }
+    $old = Remove-OldBackups -BackupDir $backupsDir -Prefix 'opencode-' -Keep 1
+    foreach ($d in $old) { Write-Host "  removed older backup $(Split-Path -Leaf $d)" -ForegroundColor DarkGray }
+}
+
+# Downloading an installer just to unpack it leaves hundreds of MB behind.
+# After a successful update there is nothing left to reuse - the tool installer
+# always re-downloads - so delete the archives and the staging folders.
+function Clear-UpdateDownloads {
+    Remove-Item $stageDir, $newAppDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $dlDir '_unpack') -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+    $archives = @(Get-ChildItem -LiteralPath $dlDir -File -Force -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Extension -in @('.exe', '.msi', '.zip', '.7z') })
+    $freed = 0
+    foreach ($f in $archives) {
+        $freed += $f.Length
+        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+    }
+    if ($freed -gt 0) {
+        Write-Host ("  deleted downloaded installers ({0} MB)" -f [math]::Round($freed / 1MB, 1)) -ForegroundColor DarkGray
+    }
+}
+
+# Refresh every installed toolchain through the tool manager. OpenCode itself
+# is excluded there (Test-ToolInstalled / Update-Tools), because this script
+# just replaced it.
+function Invoke-ToolUpdate {
+    $manager = Join-Path $PortableRoot 'bin\Manage-Tools.ps1'
+    if (-not (Test-Path $manager)) {
+        Write-Warning "tool manager not found: $manager"
+        return $false
+    }
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Write-Host ""
+    Write-Host "========================================================"
+    Write-Host "  Updating installed toolchains"
+    Write-Host "========================================================"
+    & $ps -NoProfile -ExecutionPolicy Bypass -File $manager -Update -Force -Root $PortableRoot
+    return ($LASTEXITCODE -eq 0)
+}
 
 # Prefer the 7-Zip bundled inside the portable (apps\7zip\7za.exe). It is a
 # standalone build, so the updater works on a machine that has never had
@@ -132,6 +188,12 @@ Write-Host "  New version: $newVer"
 if ($currentVer -eq $newVer -and -not $Force) {
   Write-Host ""
   Write-Warning "Already on latest version ($currentVer). Use -Force to reinstall."
+  # Nothing to install, but the download and staging area are still full.
+  Clear-UpdateDownloads
+  if ($UpdateTools) {
+    Remove-OldAppBackups
+    if (Invoke-ToolUpdate) { exit 0 } else { exit 1 }
+  }
   exit 0
 }
 
@@ -230,8 +292,17 @@ Write-Host "  User data preserved in: $PortableRoot\data\"
 Write-Host "========================================================"
 
 # --- 10. Cleanup ---
-Remove-Item $stageDir, $newAppDir -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+Clear-UpdateDownloads
+Remove-OldAppBackups
+
+if ($UpdateTools) {
+    if (-not (Invoke-ToolUpdate)) {
+        Write-Error "OpenCode is updated, but refreshing the toolchains failed. Run bin\Manage-Tools.cmd -Update to retry."
+        exit 1
+    }
+    Remove-OldAppBackups
+    Clear-UpdateDownloads
+}
 
 Write-Host ""
 Write-Host "  Run Verify.cmd (option 4 in Launch.cmd) to confirm."

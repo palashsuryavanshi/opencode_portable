@@ -29,6 +29,10 @@
 .PARAMETER NoAndroid
     Skip Android SDK package installation (keep the command-line tools).
 
+.PARAMETER NoOpenCode
+    Do not add OpenCode itself to the selection. Used by bin\Manage-Tools.ps1,
+    which updates toolchains while the app is handled by its own updater.
+
 .EXAMPLE
     .\install-selected-tools.ps1
     Install interactively, choosing tools.
@@ -48,7 +52,8 @@ param(
     [string] $Only,
     [switch] $Force,
     [switch] $List,
-    [switch] $NoAndroid
+    [switch] $NoAndroid,
+    [switch] $NoOpenCode
 )
 
 Set-StrictMode -Version 2.0
@@ -628,8 +633,10 @@ if (@($selected).Count -eq 0) {
     exit 0
 }
 
-# OpenCode itself is the point of the bundle - always include it
-if ('opencode' -notin $selected) {
+# OpenCode itself is the point of the bundle - always include it, unless the
+# caller is a tool-only flow (Manage-Tools updates toolchains while leaving the
+# app to bin\Update-OpenCode.ps1).
+if ('opencode' -notin $selected -and -not $NoOpenCode) {
     Write-Warn2 "adding OpenCode itself to the selection"
     $selected = @('opencode') + $selected
 }

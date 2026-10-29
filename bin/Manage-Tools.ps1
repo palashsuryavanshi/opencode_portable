@@ -34,9 +34,15 @@
     Start a tool-facing app instead of changing anything: vscode, shell, bash
     or android.
 
+.PARAMETER Update
+    Re-download and reinstall every installed toolchain (OpenCode itself
+    excepted - it has its own updater). Downloaded installers are deleted
+    after the update.
+
 .PARAMETER Force
     With -Remove: stop running processes instead of refusing. With -Add:
-    reinstall tools that are already present.
+    reinstall tools that are already present. With -Update: skip the
+    confirmation prompt.
 
 .PARAMETER ClearDownloads
     Delete the cached installers in downloads\.
@@ -44,6 +50,10 @@
 .EXAMPLE
     .\Manage-Tools.ps1
     Interactive add/remove/launch menu.
+
+.EXAMPLE
+    .\Manage-Tools.ps1 -Update
+    Refresh every installed toolchain.
 
 .EXAMPLE
     .\Manage-Tools.ps1 -List
@@ -64,6 +74,7 @@ param(
     [string] $Add,
     [string] $Remove,
     [string] $Launch,
+    [switch] $Update,
     [switch] $Force,
     [switch] $ClearDownloads
 )
@@ -375,21 +386,22 @@ function Add-Tool {
     }
 
     Write-Step "Installing $($Tool.Label)"
-    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Installer, '-Only', $Tool.Name)
+    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Installer, '-Only', $Tool.Name, '-NoOpenCode')
     if ($script:ForceAll) { $psArgs += '-Force' }
     & $PsExe @psArgs
     $rc = $LASTEXITCODE
 
     $script:SizeCache.Remove($Tool.Name)
-    # The installer exits non-zero if *anything* in its run failed. It always
-    # includes OpenCode itself, which is expected to fail on a fresh checkout
-    # where the app is not installed yet - so trust the verification of the
-    # tool that was actually asked for.
+    # -NoOpenCode means the installer only handles the requested tool, so a
+    # non-zero exit code really is this tool's problem.
     if (Test-ToolInstalled $Tool.Name) {
         Write-Ok "$($Tool.Label) is installed ($(Get-ToolSizeMB $Tool.Name) MB on disk)"
         if ($rc -ne 0) {
-            Write-Warn2 "the installer reported failures for other items (exit code $rc) - see the output above"
+            Write-Warn2 "the installer reported failures (exit code $rc) - see the output above"
         }
+        # Installers are never reused - the build script always re-downloads - so
+        # don't let a few GB of archives pile up after a successful install.
+        Clear-Downloads -Quiet
         return $true
     }
     Write-Err2 "$($Tool.Label) did not install correctly (exit code $rc)"
@@ -397,23 +409,91 @@ function Add-Tool {
 }
 
 function Clear-Downloads {
+    param([switch]$Quiet)
+
     # Never delete the tracked placeholders - only real downloaded installers.
     $files = @(Get-ChildItem -LiteralPath $DlDir -File -Force -ErrorAction SilentlyContinue |
                Where-Object { $_.Name -notin @('.gitkeep', '.gitignore') })
     if ($files.Count -eq 0) {
-        Write-Host "  downloads\ is already empty." -ForegroundColor DarkGray
+        if (-not $Quiet) { Write-Host "  downloads\ is already empty." -ForegroundColor DarkGray }
         return
     }
     $sum = ($files | Measure-Object -Property Length -Sum).Sum
     $mb = 0
     if ($sum) { $mb = [int]($sum / 1MB) }
-    Write-Host "  $($files.Count) cached installer(s), $mb MB in downloads\"
-    if (-not $script:ForceAll) {
+    if (-not $Quiet) { Write-Host "  $($files.Count) cached installer(s), $mb MB in downloads\" }
+    if (-not $Quiet -and -not $script:ForceAll) {
         if (-not (Read-Yes "  Delete them? [y/N]" $false)) { return }
     }
     foreach ($f in $files) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath (Join-Path $DlDir '_unpack') -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Ok "cleared downloads\ - about $mb MB freed"
+    if ($Quiet) {
+        Write-Host "    installers deleted ($mb MB freed)" -ForegroundColor DarkGray
+    } else {
+        Write-Ok "cleared downloads\ - about $mb MB freed"
+    }
+}
+
+function Update-Tools {
+    # Refresh every installed toolchain. OpenCode is excluded on purpose: the
+    # app is replaced by bin\Update-OpenCode.ps1, not by unpacking an archive
+    # over apps\opencode while it may be running.
+    $names = @($Tools |
+               Where-Object { $_.Name -ne 'opencode' -and (Test-ToolInstalled $_.Name) } |
+               ForEach-Object { $_.Name })
+    if ($names.Count -eq 0) {
+        Write-Host "  No toolchains installed - nothing to update." -ForegroundColor DarkGray
+        return $true
+    }
+
+    $totalMB = ($Tools | Where-Object { $_.Name -in $names } | Measure-Object SizeMB -Sum).Sum
+    Write-Step "Updating $($names.Count) installed toolchain(s)"
+    foreach ($t in ($Tools | Where-Object { $_.Name -in $names })) {
+        Write-Host ("    {0,-26} about {1} MB" -f $t.Label, $t.SizeMB) -ForegroundColor Gray
+    }
+    Show-FreeSpace
+
+    if (-not (Test-Path $Installer)) {
+        Write-Err2 "installer not found: $Installer"
+        return $false
+    }
+    if (-not $script:ForceAll) {
+        $freeGB = $null
+        try {
+            $drive = $Root.Substring(0, 2).TrimEnd(':')
+            $freeGB = [math]::Round((Get-PSDrive -Name $drive -ErrorAction Stop).Free / 1GB, 1)
+        } catch { }
+        if ($freeGB -and $freeGB -lt [math]::Round($totalMB / 1024, 1)) {
+            Write-Err2 "not enough free space: about $totalMB MB needed, $freeGB GB free"
+            return $false
+        }
+        if (-not (Read-Yes "  Download and reinstall them (about $totalMB MB)? [Y/n]" $true)) {
+            return $false
+        }
+    }
+
+    Write-Step "Downloading and installing"
+    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Installer,
+                '-Only', ($names -join ','), '-Force', '-NoOpenCode')
+    & $PsExe @psArgs
+    $rc = $LASTEXITCODE
+
+    # The installer always re-downloads, so the archives are dead weight once
+    # the update is in place - especially at ~5 GB for a full refresh.
+    Clear-Downloads -Quiet
+
+    $failed = @()
+    foreach ($n in $names) {
+        $script:SizeCache.Remove($n)
+        if (-not (Test-ToolInstalled $n)) { $failed += $n }
+    }
+    if ($failed.Count -gt 0) {
+        Write-Err2 "these did not verify after the update: $($failed -join ', ')"
+        return $false
+    }
+    Write-Ok "updated: $($names -join ', ')"
+    if ($rc -ne 0) { Write-Warn2 "installer exit code $rc - see the output above" }
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -423,7 +503,7 @@ function Invoke-Menu {
     while ($true) {
         Show-Tools
         Write-Host "  Enter 1-9, a letter (a, b, ...) or a tool name to add or remove that toolchain." -ForegroundColor DarkGray
-        Write-Host "  v/s/g/d launch a tool   c = clear downloaded installers   q = quit" -ForegroundColor DarkGray
+        Write-Host "  v/s/g/d launch a tool   u = update installed tools   c = clear downloads   q = quit" -ForegroundColor DarkGray
         Write-Host ""
         $line = Read-Host '  Tool'
         if ($null -eq $line) { break }
@@ -432,6 +512,7 @@ function Invoke-Menu {
         $low = $line.ToLower()
         if ($low -eq 'q' -or $low -eq 'quit') { break }
         if ($low -eq 'c' -or $low -eq 'clear') { Clear-Downloads; continue }
+        if ($low -eq 'u' -or $low -eq 'update') { [void](Update-Tools); continue }
 
         # Single-letter keys start a tool-facing app; longer input is a tool name.
         if ($low.Length -eq 1) {
@@ -467,6 +548,10 @@ function Invoke-Menu {
 if ($List) {
     Show-Tools
     exit 0
+}
+
+if ($Update) {
+    if (Update-Tools) { exit 0 } else { exit 1 }
 }
 
 if ($ClearDownloads) {
@@ -515,7 +600,7 @@ if ($Add) {
     $failed = @()
     foreach ($n in $names) {
         $tool = $Tools | Where-Object { $_.Name -eq $n } | Select-Object -First 1
-        if (Test-ToolInstalled $n -and -not $script:ForceAll) {
+        if ((Test-ToolInstalled $n) -and -not $script:ForceAll) {
             Write-Ok "$($tool.Label) already installed - skipping"
             continue
         }
