@@ -47,7 +47,7 @@ This downloads ~2 GB of tools and installs them to `apps/`. Only needs to be don
 - **Verification** - option 4 checks path isolation
 - **Tool manager** - option 7 installs, removes and launches toolchains
 - **Self-cleaning updates** - downloaded installers are deleted and only the newest backup of each kind is kept
-- **Progress feedback** - download and install progress are shown as percentages in a console and as milestone lines when captured to a log
+- **First-time setup** - `FirstTimeSetup.cmd` / `FirstTimeSetup.ps1` (Windows only) asks for the OpenCode variant (CLI only or CLI + GUI) and the optional toolchains, shows the total install size first, then installs after confirmation
 
 ## Updating OpenCode
 

@@ -1,12 +1,12 @@
-# OpenCode Portable — Windows
+# OpenCode Portable ï¿½ Windows
 
 A complete development environment that runs from a USB stick. Nothing is
-installed, no administrator rights are needed, and all of your data — chat
-sessions, settings, caches — stays on the drive.
+installed, no administrator rights are needed, and all of your data ï¿½ chat
+sessions, settings, caches ï¿½ stays on the drive.
 
-> **Linux user?** See [opencode-portable-linux](https://github.com/palashsuryavanshi/opencode-portable-linux) — same tools, same layout, same launcher design.
+> **Linux user?** See [opencode-portable-linux](https://github.com/palashsuryavanshi/opencode-portable-linux) ï¿½ same tools, same layout, same launcher design.
 
-![Release](https://img.shields.io/badge/release-v1.1-blue)
+![Release](https://img.shields.io/badge/release-v1.5-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey)
 ![Tools](https://img.shields.io/badge/tools-optional-installer-orange)
 
@@ -14,14 +14,21 @@ sessions, settings, caches — stays on the drive.
 
 ## Quick start
 
-**1. Get the portable folder** onto your USB drive — clone it, or download and
+**First-time setup (Windows only):** run `FirstTimeSetup.cmd` (or `FirstTimeSetup.ps1`).
+It asks for the OpenCode variant (CLI only, ~78 MB, or CLI + GUI, ~740 MB)
+and the optional toolchains, shows the **total install size** first, and then
+installs after confirmation.
+
+On an already-built stick the **launcher** is `Launch.cmd`.
+
+**1. Get the portable folder** onto your USB drive ï¿½ clone it, or download and
 extract the release zip:
 
 ```powershell
 git clone https://github.com/palashsuryavanshi/opencode_portable.git E:\opencode-portable
 ```
 
-> The repository is the **scaffold** — launchers, scripts and an empty directory
+> The repository is the **scaffold** ï¿½ launchers, scripts and an empty directory
 > structure. The toolchains themselves are ~5 GB and are downloaded by the
 > installer in step 2, so that nobody has to take 5 GB they do not need.
 
@@ -143,12 +150,12 @@ Double-click **`Launch.cmd`**.
 
 | Key | Action |
 |---|---|
-| **1** | OpenCode GUI — main app, your sessions included |
-| **2** | OpenCode CLI (TUI) — same sessions as the GUI |
-| **3** | Sessions — backup / restore / list / import |
+| **1** | OpenCode GUI ï¿½ main app, your sessions included |
+| **2** | OpenCode CLI (TUI) ï¿½ same sessions as the GUI |
+| **3** | Sessions ï¿½ backup / restore / list / import |
 | **4** | Verify portable setup |
-| **5** | Update OpenCode — latest app, then every installed toolchain |
-| **6** | Update tools — re-download the installed toolchains only |
+| **5** | Update OpenCode ï¿½ latest app, then every installed toolchain |
+| **6** | Update tools ï¿½ re-download the installed toolchains only |
 | **7** | Manage tools - install / remove / launch toolchains, clear cached installers |
 | **0** | Exit |
 
@@ -170,17 +177,17 @@ drive. Nothing is written to the host machine:
 
 | Variable | Redirected to |
 |---|---|
-| `XDG_DATA_HOME` | `data/opencode-data/` — sessions (SQLite database) |
-| `XDG_CONFIG_HOME` | `data/opencode-config/` — settings, providers, auth |
+| `XDG_DATA_HOME` | `data/opencode-data/` ï¿½ sessions (SQLite database) |
+| `XDG_CONFIG_HOME` | `data/opencode-config/` ï¿½ settings, providers, auth |
 | `XDG_CACHE_HOME` | `data/opencode-cache/` |
 | `XDG_STATE_HOME` | `data/opencode-state/` |
 | `APPDATA`, `LOCALAPPDATA` | `data/appdata/` |
 | `USERPROFILE`, `HOME` | `data/home/` |
 | `TEMP`, `TMP` | `data/tmp/` |
-| `npm_config_cache`, `PIP_CACHE_DIR`, `GRADLE_USER_HOME`, `GOPATH`, `GOCACHE`, `CARGO_HOME`, `RUSTUP_HOME` | `data/…` |
+| `npm_config_cache`, `PIP_CACHE_DIR`, `GRADLE_USER_HOME`, `GOPATH`, `GOCACHE`, `CARGO_HOME`, `RUSTUP_HOME` | `data/ï¿½` |
 
 Because `PATH` is rebuilt at every launch, tools you install later are picked up
-automatically — there is nothing to edit.
+automatically ï¿½ there is nothing to edit.
 
 > **Use the launchers, not the binaries.** Running `OpenCode.exe` or
 > `opencode-cli.exe` directly from Explorer skips `env.cmd`, so OpenCode falls
@@ -196,15 +203,15 @@ travels with the drive.
 
 `Launch.cmd` ? **3** gives you:
 
-- **backup** — snapshot the current sessions into `data\backups\`
-- **restore** — load the newest snapshot back
-- **list** — show available snapshots
-- **import** — pull sessions from a host PC's own OpenCode installation
+- **backup** ï¿½ snapshot the current sessions into `data\backups\`
+- **restore** ï¿½ load the newest snapshot back
+- **list** ï¿½ show available snapshots
+- **import** ï¿½ pull sessions from a host PC's own OpenCode installation
   (`~\.local\share\opencode`)
 
 Close OpenCode before backing up or restoring. The database runs in WAL mode, and
 copying it while OpenCode is writing can produce a torn copy. Each backup is a
-full copy, so only the newest one of each kind is kept — older snapshots are
+full copy, so only the newest one of each kind is kept ï¿½ older snapshots are
 deleted automatically after a new one is written.
 
 ---
@@ -233,28 +240,28 @@ never leaves hundreds of MB of leftovers behind. Tools installed via option
 opencode-portable/
 +-- Launch.cmd                  main menu
 +-- bin/                        launchers
-¦   +-- OpenCode.cmd            OpenCode GUI
-¦   +-- VSCode.cmd              VS Code
-¦   +-- Shell.cmd               developer shell
-¦   +-- Bash.cmd                Git Bash
-¦   +-- OpenCodeCLI.cmd         OpenCode TUI
-¦   +-- Android.cmd             Android SDK manager
-¦   +-- Sync.cmd                session backup / restore
-¦   +-- Update-OpenCode.cmd     OpenCode updater
-¦   +-- Verify.cmd              path isolation check
-¦   +-- env.cmd                 sets every path to the stick
+ï¿½   +-- OpenCode.cmd            OpenCode GUI
+ï¿½   +-- VSCode.cmd              VS Code
+ï¿½   +-- Shell.cmd               developer shell
+ï¿½   +-- Bash.cmd                Git Bash
+ï¿½   +-- OpenCodeCLI.cmd         OpenCode TUI
+ï¿½   +-- Android.cmd             Android SDK manager
+ï¿½   +-- Sync.cmd                session backup / restore
+ï¿½   +-- Update-OpenCode.cmd     OpenCode updater
+ï¿½   +-- Verify.cmd              path isolation check
+ï¿½   +-- env.cmd                 sets every path to the stick
 +-- build/                      installers
-¦   +-- install-selected-tools.ps1   pick toolchains   <- start here
-¦   +-- fetch-tools.ps1             download everything
-¦   +-- install-tools.ps1           extract everything
-¦   +-- setup-android.ps1           Android SDK packages
+ï¿½   +-- install-selected-tools.ps1   pick toolchains   <- start here
+ï¿½   +-- fetch-tools.ps1             download everything
+ï¿½   +-- install-tools.ps1           extract everything
+ï¿½   +-- setup-android.ps1           Android SDK packages
 +-- apps/                       installed toolchains
-¦   +-- 7zip/                   bundled standalone 7-Zip (no host install needed)
+ï¿½   +-- 7zip/                   bundled standalone 7-Zip (no host install needed)
 +-- data/                       everything persistent
-¦   +-- opencode-data/          chat sessions
-¦   +-- opencode-config/        settings, providers, auth
-¦   +-- appdata/                redirected profile writes
-¦   +-- backups/                session snapshots
+ï¿½   +-- opencode-data/          chat sessions
+ï¿½   +-- opencode-config/        settings, providers, auth
+ï¿½   +-- appdata/                redirected profile writes
+ï¿½   +-- backups/                session snapshots
 +-- projects/                   put your code here
 +-- downloads/                  installer cache (safe to delete)
 ```
@@ -292,7 +299,7 @@ time. This is one-off per machine.
 ## Requirements
 
 - Windows 10 or 11, 64-bit
-- A USB drive — budget 1 GB for OpenCode alone, 6 GB for everything
+- A USB drive ï¿½ budget 1 GB for OpenCode alone, 6 GB for everything
 - Internet access on first run, for downloads
 
 **No 7-Zip needed.** A standalone copy is bundled at `apps\7zip\7za.exe` and the
@@ -306,7 +313,7 @@ Windows, and nothing is registered.
 
 | Edition | Repository | Launcher |
 |---|---|---|
-| **Windows 10/11 (x64)** | [`opencode_portable`](https://github.com/palashsuryavanshi/opencode_portable) — *this repo* | `Launch.cmd` |
+| **Windows 10/11 (x64)** | [`opencode_portable`](https://github.com/palashsuryavanshi/opencode_portable) ï¿½ *this repo* | `Launch.cmd` |
 | **Linux (x64)** | [`opencode-portable-linux`](https://github.com/palashsuryavanshi/opencode-portable-linux) | `./launch.sh` |
 
 Same toolchains, same session layout, same `data/` isolation model. Session
@@ -317,5 +324,5 @@ identical, so moving a workflow between the two is straightforward.
 
 ## License
 
-This packaging is MIT. Each bundled tool remains under its own licence — see
+This packaging is MIT. Each bundled tool remains under its own licence ï¿½ see
 `apps/<tool>/` after installing.
