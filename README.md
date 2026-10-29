@@ -78,6 +78,24 @@ The installer lists every tool with its size, shows a running total, checks free
 space on the drive before downloading, fetches your selection in parallel, and
 **verifies each tool after installing**. Anything already installed is skipped.
 
+### Managing installed tools
+
+`Launch.cmd` → **10** opens the add/remove menu (`bin\Manage-Tools.cmd`):
+
+| Action | Command |
+|---|---|
+| Interactive menu | `bin\Manage-Tools.cmd` |
+| Show what is installed and how much space it uses | `bin\Manage-Tools.cmd -List` |
+| Install tools | `bin\Manage-Tools.cmd -Add "python,go"` |
+| Remove tools | `bin\Manage-Tools.cmd -Remove "vscode,dotnet"` |
+| Delete cached installers | `bin\Manage-Tools.cmd -ClearDownloads` |
+
+Removing a tool deletes only its folder under `apps\`. `data\` (chat sessions,
+settings, caches) and `projects\` are never touched, so you can remove a tool
+today and reinstall it later without losing work. OpenCode itself cannot be
+removed from the menu - use **9** to reinstall or update it. If a tool is
+running, the manager refuses to delete it; close it first, or pass `-Force`.
+
 Some useful combinations:
 
 | Goal | Selection | Size |
@@ -107,6 +125,7 @@ Double-click **`Launch.cmd`**.
 | **7** | Sessions — backup / restore / list / import |
 | **8** | Verify portable setup |
 | **9** | Update OpenCode |
+| **10** | Manage tools - add / remove toolchains, clear cached installers |
 | **0** | Exit |
 
 ---
