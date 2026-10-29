@@ -193,19 +193,25 @@ function Find-Tool {
         if ($i -ge 0 -and $i -lt $Tools.Count) { return $Tools[$i] }
         return $null
     }
+    # Numbers stop at 9; the 10th, 11th, ... entries are a, b, c, ...
+    if ($t -match '^[a-z]$') {
+        $i = 10 + ([int][char]$t - [int][char]'a') - 1
+        if ($i -ge 0 -and $i -lt $Tools.Count) { return $Tools[$i] }
+        return $null
+    }
     return ($Tools | Where-Object { $_.Name -eq $t.ToLower() } | Select-Object -First 1)
 }
 
 # The tool-facing apps now live in this menu instead of Launch.cmd. Each entry
 # points at the launcher in bin\, which already loads env.cmd, so PATH and the
 # portable data redirection are exactly the same as when they were top-level
-# menu items.
+# menu items. Keys avoid a/b, which address the 10th/11th catalogue entry.
 function Get-LaunchTargets {
     @(
         [pscustomobject]@{ Key = 'v'; Label = 'VS Code';             Name = 'vscode';  Launcher = 'VSCode.cmd' }
         [pscustomobject]@{ Key = 's'; Label = 'Developer Shell';     Name = $null;     Launcher = 'Shell.cmd' }
-        [pscustomobject]@{ Key = 'b'; Label = 'Git Bash';            Name = 'git';     Launcher = 'Bash.cmd' }
-        [pscustomobject]@{ Key = 'a'; Label = 'Android SDK Manager'; Name = 'android'; Launcher = 'Android.cmd' }
+        [pscustomobject]@{ Key = 'g'; Label = 'Git Bash';            Name = 'git';     Launcher = 'Bash.cmd' }
+        [pscustomobject]@{ Key = 'd'; Label = 'Android SDK Manager'; Name = 'android'; Launcher = 'Android.cmd' }
     )
 }
 
@@ -255,6 +261,8 @@ function Show-Tools {
     $i = 0
     foreach ($t in $Tools) {
         $i++
+        # Numbers only go up to 9; from the 10th entry on, use letters.
+        $key = if ($i -le 9) { [string]$i } else { [string][char]([int][char]'a' + ($i - 10)) }
         $installed = Test-ToolInstalled $t.Name
         $status = 'not installed'
         $size   = ''
@@ -264,7 +272,7 @@ function Show-Tools {
             $size   = "$(Get-ToolSizeMB $t.Name) MB"
             $color  = 'Green'
         }
-        Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f $i, $t.Label, $status, $size, $t.Desc) -ForegroundColor $color
+        Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f $key, $t.Label, $status, $size, $t.Desc) -ForegroundColor $color
     }
     Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f '-', '7-Zip (bundled)', 'built-in', "$(Get-ToolSizeMB '7zip') MB", 'required by installers') -ForegroundColor DarkGray
     Write-Host ("  " + ('-' * 80)) -ForegroundColor DarkGray
@@ -414,8 +422,8 @@ function Clear-Downloads {
 function Invoke-Menu {
     while ($true) {
         Show-Tools
-        Write-Host "  Enter a number or tool name to add or remove that toolchain." -ForegroundColor DarkGray
-        Write-Host "  v/s/b/a launch a tool   c = clear downloaded installers   q = quit" -ForegroundColor DarkGray
+        Write-Host "  Enter 1-9, a letter (a, b, ...) or a tool name to add or remove that toolchain." -ForegroundColor DarkGray
+        Write-Host "  v/s/g/d launch a tool   c = clear downloaded installers   q = quit" -ForegroundColor DarkGray
         Write-Host ""
         $line = Read-Host '  Tool'
         if ($null -eq $line) { break }
@@ -467,12 +475,13 @@ if ($ClearDownloads) {
 }
 
 if ($Launch) {
-    # Accept the menu key (v/s/b/a) or the app name.
+    # Accept the menu key (v/s/g/d) or the app name. a and b are tools, not
+    # launchers, so they are deliberately not aliases here.
     $aliases = @{
         'v' = 'v'; 'vscode' = 'v'; 'code' = 'v'
         's' = 's'; 'shell' = 's'; 'devshell' = 's'
-        'b' = 'b'; 'bash' = 'b'; 'gitbash' = 'b'
-        'a' = 'a'; 'android' = 'a'; 'sdk' = 'a'
+        'g' = 'g'; 'bash' = 'g'; 'gitbash' = 'g'
+        'd' = 'd'; 'android' = 'd'; 'sdk' = 'd'
     }
     $key = $Launch.Trim().ToLower()
     if (-not $aliases.ContainsKey($key)) {

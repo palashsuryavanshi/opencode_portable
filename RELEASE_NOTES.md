@@ -21,7 +21,7 @@ Complete portable development environment for Windows. Run from USB without inst
 1. **Download** this release zip (or clone the repo)
 2. **Extract** to your USB drive (e.g., `E:\opencode-portable`)
 3. **Run** `Launch.cmd`
-4. **Choose option 1** for OpenCode GUI, or **a** for the tool menu
+4. **Choose option 1** for OpenCode GUI, or **6** for the tool menu
    (VS Code, Developer Shell, Git Bash, Android SDK Manager)
 
 ## First Run - Install Tools
@@ -45,7 +45,7 @@ This downloads ~2 GB of tools and installs them to `apps/`. Only needs to be don
 - **Auto-updater** - option 5 in Launch.cmd downloads latest OpenCode
 - **Session backup/restore** - option 3 in Launch.cmd
 - **Verification** - option 4 checks path isolation
-- **Tool manager** - option a installs, removes and launches toolchains
+- **Tool manager** - option 6 installs, removes and launches toolchains
 
 ## Updating OpenCode
 

@@ -80,7 +80,7 @@ space on the drive before downloading, fetches your selection in parallel, and
 
 ### Managing installed tools
 
-`Launch.cmd` → **a** opens the tool menu (`bin\Manage-Tools.cmd`). Everything
+`Launch.cmd` → **6** opens the tool menu (`bin\Manage-Tools.cmd`). Everything
 tool-related lives there: installing, removing, clearing downloads, and
 launching the tool-facing apps.
 
@@ -93,15 +93,18 @@ launching the tool-facing apps.
 | Delete cached installers | `bin\Manage-Tools.cmd -ClearDownloads` |
 | Launch an app | `bin\Manage-Tools.cmd -Launch vscode` (also `shell`, `bash`, `android`) |
 
-Inside the menu, numbers or tool names add/remove a toolchain, while single
-letters launch one:
+Inside the menu, **1-9** then **a, b, ...** select a toolchain to add or remove
+(after 9 the numbering switches to letters, so it never needs two keystrokes).
+Single letters from the launch block start the tool-facing apps:
 
 | Key | Launches |
 |---|---|
 | **v** | VS Code |
 | **s** | Developer Shell - cmd with every toolchain on `PATH` |
-| **b** | Git Bash |
-| **a** | Android SDK Manager |
+| **g** | Git Bash |
+| **d** | Android SDK Manager |
+
+Tool names work too: `python`, `git`, `maven`, ...
 
 Removing a tool deletes only its folder under `apps\`. `data\` (chat sessions,
 settings, caches) and `projects\` are never touched, so you can remove a tool
@@ -135,14 +138,14 @@ Double-click **`Launch.cmd`**.
 | **3** | Sessions — backup / restore / list / import |
 | **4** | Verify portable setup |
 | **5** | Update OpenCode |
-| **a** | Manage tools - install / remove / launch toolchains, clear cached installers |
+| **6** | Manage tools - install / remove / launch toolchains, clear cached installers |
 | **0** | Exit |
 
-Everything tool-related is under **a**: VS Code, Developer Shell, Git Bash,
+Everything tool-related is under **6**: VS Code, Developer Shell, Git Bash,
 Android SDK Manager, and adding/removing any toolchain.
 
-Keys past 9 are letters (**a**, **b**, ...) so each entry stays a single
-keystroke; **0** always exits.
+Numbers run **1-9**; only entries past 9 become letters (**a**, **b**, ...), so
+each choice stays a single keystroke. **0** always exits.
 
 ---
 
