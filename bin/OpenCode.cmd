@@ -23,7 +23,7 @@ if not exist "%OPENCODE_EXE%" (
   echo.
   echo     On a fresh copy, install the app first:
   echo       bin\Update-OpenCode.cmd
-  echo     or from Launch.cmd choose option 9.
+  echo     or from Launch.cmd choose option 5.
   echo.
   pause
   exit /b 1

@@ -234,4 +234,4 @@ Remove-Item $stageDir, $newAppDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
-Write-Host "  Run Verify.cmd (option 8 in Launch.cmd) to confirm."
+Write-Host "  Run Verify.cmd (option 4 in Launch.cmd) to confirm."

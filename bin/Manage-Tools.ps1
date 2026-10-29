@@ -9,6 +9,10 @@
     build\install-selected-tools.ps1; installed tools are removed by deleting
     their folder under apps\.
 
+    The same menu also launches the tool-facing apps (VS Code, Developer Shell,
+    Git Bash, Android SDK Manager), so Launch.cmd only needs the OpenCode and
+    housekeeping entries.
+
     Sessions and everything else that matters is never touched: this script
     only deletes the explicit tool folders listed in Get-ToolDirs. Removing a
     tool never touches data\ or projects\.
@@ -26,6 +30,10 @@
 .PARAMETER Remove
     Comma-separated tool names to remove, e.g. -Remove "vscode,dotnet".
 
+.PARAMETER Launch
+    Start a tool-facing app instead of changing anything: vscode, shell, bash
+    or android.
+
 .PARAMETER Force
     With -Remove: stop running processes instead of refusing. With -Add:
     reinstall tools that are already present.
@@ -35,7 +43,7 @@
 
 .EXAMPLE
     .\Manage-Tools.ps1
-    Interactive add/remove menu.
+    Interactive add/remove/launch menu.
 
 .EXAMPLE
     .\Manage-Tools.ps1 -List
@@ -45,6 +53,9 @@
 
 .EXAMPLE
     .\Manage-Tools.ps1 -Add "python" -Force
+
+.EXAMPLE
+    .\Manage-Tools.ps1 -Launch vscode
 #>
 [CmdletBinding()]
 param(
@@ -52,6 +63,7 @@ param(
     [switch] $List,
     [string] $Add,
     [string] $Remove,
+    [string] $Launch,
     [switch] $Force,
     [switch] $ClearDownloads
 )
@@ -184,6 +196,36 @@ function Find-Tool {
     return ($Tools | Where-Object { $_.Name -eq $t.ToLower() } | Select-Object -First 1)
 }
 
+# The tool-facing apps now live in this menu instead of Launch.cmd. Each entry
+# points at the launcher in bin\, which already loads env.cmd, so PATH and the
+# portable data redirection are exactly the same as when they were top-level
+# menu items.
+function Get-LaunchTargets {
+    @(
+        [pscustomobject]@{ Key = 'v'; Label = 'VS Code';             Name = 'vscode';  Launcher = 'VSCode.cmd' }
+        [pscustomobject]@{ Key = 's'; Label = 'Developer Shell';     Name = $null;     Launcher = 'Shell.cmd' }
+        [pscustomobject]@{ Key = 'b'; Label = 'Git Bash';            Name = 'git';     Launcher = 'Bash.cmd' }
+        [pscustomobject]@{ Key = 'a'; Label = 'Android SDK Manager'; Name = 'android'; Launcher = 'Android.cmd' }
+    )
+}
+
+function Start-ToolLauncher {
+    param([pscustomobject]$Target)
+    if ($Target.Name -and -not (Test-ToolInstalled $Target.Name)) {
+        Write-Warn2 "$($Target.Label) is not installed."
+        Write-Host "       Add '$($Target.Name)' from this menu first." -ForegroundColor DarkGray
+        return
+    }
+    $launcher = Join-Path $Root ('bin\' + $Target.Launcher)
+    if (-not (Test-Path $launcher)) {
+        Write-Err2 "launcher not found: $launcher"
+        return
+    }
+    Write-Host "  starting $($Target.Label) ..." -ForegroundColor Cyan
+    # Interactive launchers (shell, bash, Android) return here when they exit.
+    & $env:ComSpec /c "`"$launcher`""
+}
+
 function Read-Yes {
     param([string]$Prompt, [bool]$Default = $false)
     $ans = Read-Host $Prompt
@@ -224,13 +266,24 @@ function Show-Tools {
         }
         Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f $i, $t.Label, $status, $size, $t.Desc) -ForegroundColor $color
     }
-    Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f 'b', '7-Zip (bundled)', 'built-in', "$(Get-ToolSizeMB '7zip') MB", 'required by installers') -ForegroundColor DarkGray
+    Write-Host ("  {0,-3} {1,-26} {2,-14} {3,9}  {4}" -f '-', '7-Zip (bundled)', 'built-in', "$(Get-ToolSizeMB '7zip') MB", 'required by installers') -ForegroundColor DarkGray
     Write-Host ("  " + ('-' * 80)) -ForegroundColor DarkGray
     $installedMB = 0
     foreach ($t in $Tools) { if (Test-ToolInstalled $t.Name) { $installedMB += (Get-ToolSizeMB $t.Name) } }
     $installedMB += (Get-ToolSizeMB '7zip')
     Write-Host ("  tools on disk: {0} MB" -f $installedMB) -ForegroundColor Cyan
     Show-FreeSpace
+    Write-Host ""
+    Write-Host "  Launch a tool" -ForegroundColor White
+    foreach ($t in (Get-LaunchTargets)) {
+        $state = 'ready'
+        $color = 'Green'
+        if ($t.Name -and -not (Test-ToolInstalled $t.Name)) {
+            $state = 'not installed - add it here first'
+            $color = 'DarkGray'
+        }
+        Write-Host ("    {0}  {1,-22} {2}" -f $t.Key, $t.Label, $state) -ForegroundColor $color
+    }
     Write-Host ""
 }
 
@@ -361,8 +414,8 @@ function Clear-Downloads {
 function Invoke-Menu {
     while ($true) {
         Show-Tools
-        Write-Host "  Enter a number or tool name to add or remove it." -ForegroundColor DarkGray
-        Write-Host "  c = clear downloaded installers    q = quit" -ForegroundColor DarkGray
+        Write-Host "  Enter a number or tool name to add or remove that toolchain." -ForegroundColor DarkGray
+        Write-Host "  v/s/b/a launch a tool   c = clear downloaded installers   q = quit" -ForegroundColor DarkGray
         Write-Host ""
         $line = Read-Host '  Tool'
         if ($null -eq $line) { break }
@@ -371,6 +424,12 @@ function Invoke-Menu {
         $low = $line.ToLower()
         if ($low -eq 'q' -or $low -eq 'quit') { break }
         if ($low -eq 'c' -or $low -eq 'clear') { Clear-Downloads; continue }
+
+        # Single-letter keys start a tool-facing app; longer input is a tool name.
+        if ($low.Length -eq 1) {
+            $target = Get-LaunchTargets | Where-Object { $_.Key -eq $low } | Select-Object -First 1
+            if ($target) { Start-ToolLauncher $target; continue }
+        }
 
         $tool = Find-Tool $line
         if (-not $tool) {
@@ -404,6 +463,26 @@ if ($List) {
 
 if ($ClearDownloads) {
     Clear-Downloads
+    exit 0
+}
+
+if ($Launch) {
+    # Accept the menu key (v/s/b/a) or the app name.
+    $aliases = @{
+        'v' = 'v'; 'vscode' = 'v'; 'code' = 'v'
+        's' = 's'; 'shell' = 's'; 'devshell' = 's'
+        'b' = 'b'; 'bash' = 'b'; 'gitbash' = 'b'
+        'a' = 'a'; 'android' = 'a'; 'sdk' = 'a'
+    }
+    $key = $Launch.Trim().ToLower()
+    if (-not $aliases.ContainsKey($key)) {
+        Write-Err2 "unknown launcher '$Launch'"
+        Write-Host "       valid names: vscode, shell, bash, android"
+        exit 1
+    }
+    $wanted = $aliases[$key]
+    $target = Get-LaunchTargets | Where-Object { $_.Key -eq $wanted } | Select-Object -First 1
+    Start-ToolLauncher $target
     exit 0
 }
 

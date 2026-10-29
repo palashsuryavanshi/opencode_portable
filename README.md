@@ -80,7 +80,9 @@ space on the drive before downloading, fetches your selection in parallel, and
 
 ### Managing installed tools
 
-`Launch.cmd` → **a** opens the add/remove menu (`bin\Manage-Tools.cmd`):
+`Launch.cmd` → **a** opens the tool menu (`bin\Manage-Tools.cmd`). Everything
+tool-related lives there: installing, removing, clearing downloads, and
+launching the tool-facing apps.
 
 | Action | Command |
 |---|---|
@@ -89,12 +91,24 @@ space on the drive before downloading, fetches your selection in parallel, and
 | Install tools | `bin\Manage-Tools.cmd -Add "python,go"` |
 | Remove tools | `bin\Manage-Tools.cmd -Remove "vscode,dotnet"` |
 | Delete cached installers | `bin\Manage-Tools.cmd -ClearDownloads` |
+| Launch an app | `bin\Manage-Tools.cmd -Launch vscode` (also `shell`, `bash`, `android`) |
+
+Inside the menu, numbers or tool names add/remove a toolchain, while single
+letters launch one:
+
+| Key | Launches |
+|---|---|
+| **v** | VS Code |
+| **s** | Developer Shell - cmd with every toolchain on `PATH` |
+| **b** | Git Bash |
+| **a** | Android SDK Manager |
 
 Removing a tool deletes only its folder under `apps\`. `data\` (chat sessions,
 settings, caches) and `projects\` are never touched, so you can remove a tool
 today and reinstall it later without losing work. OpenCode itself cannot be
-removed from the menu - use **9** to reinstall or update it. If a tool is
-running, the manager refuses to delete it; close it first, or pass `-Force`.
+removed from the menu - use **5** (Update OpenCode) to reinstall or update it.
+If a tool is running, the manager refuses to delete it; close it first, or pass
+`-Force`.
 
 Some useful combinations:
 
@@ -117,16 +131,15 @@ Double-click **`Launch.cmd`**.
 | Key | Action |
 |---|---|
 | **1** | OpenCode GUI — main app, your sessions included |
-| **2** | VS Code |
-| **3** | Developer Shell — cmd with every toolchain on `PATH` |
-| **4** | Git Bash |
-| **5** | OpenCode CLI (TUI) — same sessions as the GUI |
-| **6** | Android SDK Manager |
-| **7** | Sessions — backup / restore / list / import |
-| **8** | Verify portable setup |
-| **9** | Update OpenCode |
-| **a** | Manage tools - add / remove toolchains, clear cached installers |
+| **2** | OpenCode CLI (TUI) — same sessions as the GUI |
+| **3** | Sessions — backup / restore / list / import |
+| **4** | Verify portable setup |
+| **5** | Update OpenCode |
+| **a** | Manage tools - install / remove / launch toolchains, clear cached installers |
 | **0** | Exit |
+
+Everything tool-related is under **a**: VS Code, Developer Shell, Git Bash,
+Android SDK Manager, and adding/removing any toolchain.
 
 Keys past 9 are letters (**a**, **b**, ...) so each entry stays a single
 keystroke; **0** always exits.
@@ -164,7 +177,7 @@ automatically — there is nothing to edit.
 Your chat history is a SQLite database in `data/opencode-data\opencode\`. It
 travels with the drive.
 
-`Launch.cmd` → **7** gives you:
+`Launch.cmd` → **3** gives you:
 
 - **backup** — snapshot the current sessions into `data\backups\`
 - **restore** — load the newest snapshot back
@@ -180,7 +193,7 @@ copying it while OpenCode is writing can produce a torn copy.
 ## Updating
 
 ```powershell
-bin\Update-OpenCode.cmd          # or Launch.cmd -> 9
+bin\Update-OpenCode.cmd          # or Launch.cmd -> 5
 ```
 
 Downloads the latest stable OpenCode from
@@ -234,7 +247,7 @@ You launched the binary directly. Use `Launch.cmd`, or option 1 from the menu.
 You are running `Launch.cmd` from inside `bin\`. Run it from the portable root.
 
 **A tool is missing from the Developer Shell**
-Re-run `Launch.cmd` → **8** to see which `PATH` entries resolved. Then re-run
+Re-run `Launch.cmd` → **4** to see which `PATH` entries resolved. Then re-run
 the installer for that tool.
 
 **Android SDK manager appears to hang**
@@ -249,7 +262,7 @@ the selection, or use a larger stick.
 Windows Defender and SmartScreen scan each binary from removable media the first
 time. This is one-off per machine.
 
-**Verify anything at any time:** `Launch.cmd` → **8**
+**Verify anything at any time:** `Launch.cmd` → **4**
 
 ---
 

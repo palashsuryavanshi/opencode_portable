@@ -9,6 +9,7 @@ rem    Manage-Tools.cmd                      interactive menu
 rem    Manage-Tools.cmd -List                show what is installed
 rem    Manage-Tools.cmd -Add "python,go"     install tools
 rem    Manage-Tools.cmd -Remove "vscode"     remove a tool
+rem    Manage-Tools.cmd -Launch vscode       start VS Code (shell|bash|android)
 rem ============================================================================
 setlocal
 call "%~dp0env.cmd"
