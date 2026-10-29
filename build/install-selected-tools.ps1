@@ -97,6 +97,217 @@ function Write-Warn2 { param([string]$m) Write-Host "    [warn] $m" -ForegroundC
 function Write-Err2  { param([string]$m) Write-Host "    [FAIL] $m" -ForegroundColor Red }
 
 # ---------------------------------------------------------------------------
+# Progress reporting
+#
+# Write-Progress draws the bar when the script runs in a console. When the
+# output is redirected (logs, automation) it renders nothing, so the same
+# numbers are also emitted as milestone lines in that case.
+# ---------------------------------------------------------------------------
+$script:TextMode = $false
+try { $script:TextMode = [Console]::IsOutputRedirected } catch { $script:TextMode = $true }
+
+function Format-Bytes {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N1} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N0} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N0} KB' -f ($Bytes / 1KB))
+}
+
+function Show-PhaseProgress {
+    param(
+        [string] $Activity,
+        [string] $Status,
+        [int]    $Percent,
+        [int]    $Id = 1
+    )
+    if ($Percent -lt 0) {
+        Write-Progress -Id $Id -Activity $Activity -Status $Status
+    } else {
+        Write-Progress -Id $Id -Activity $Activity -Status $Status -PercentComplete ([Math]::Min(100, $Percent))
+    }
+}
+
+function Write-TextProgress {
+    # Console-friendly copy of the bar for redirected output.
+    param([string]$Text)
+    if ($script:TextMode) { Write-Host "    $Text" -ForegroundColor DarkGray }
+}
+
+# Read the last "NN%" that a child process wrote. 7-Zip and the Android SDK
+# manager both update a single line, so the tail of the log is enough.
+function Get-LastPercent {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return -1 }
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+        try {
+            $len = $fs.Length
+            if ($len -le 0) { return -1 }
+            $take = [Math]::Min(4096, $len)
+            [void]$fs.Seek(-$take, 'End')
+            $bytes = New-Object byte[] $take
+            [void]$fs.Read($bytes, 0, $take)
+            $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+        } finally { $fs.Dispose() }
+    } catch { return -1 }
+    $m = [regex]::Matches($text, '(\d{1,3})\s*%')
+    if ($m.Count -eq 0) { return -1 }
+    $pct = [int]$m[$m.Count - 1].Groups[1].Value
+    if ($pct -lt 0)   { return 0 }
+    if ($pct -gt 100) { return 100 }
+    return $pct
+}
+
+function Quote-Arg {
+    param([string]$Value)
+    if ($Value -match '[\s"]') { return '"' + ($Value -replace '"', '\"') + '"' }
+    return $Value
+}
+
+# Total unpacked bytes in an archive, read from 7-Zip's listing. Used as the
+# denominator when the extractor never prints a percentage (it skips the
+# progress line entirely when a job finishes in well under a second).
+function Get-ArchiveBytes {
+    param([string]$Archive, [string]$SevenZip)
+    if (-not $SevenZip) { $SevenZip = Find-7z }
+    if (-not $SevenZip -or -not $Archive) { return 0 }
+    $sum = 0
+    try {
+        & $SevenZip l -slt $Archive 2>$null | ForEach-Object {
+            if ($_ -match '^Size = (\d+)$') { $sum += [int64]$Matches[1] }
+        }
+    } catch { return 0 }
+    return $sum
+}
+
+function Get-DirBytes {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return 0 }
+    $sum = 0
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { $sum += $_.Length }
+    return $sum
+}
+
+# Install-phase position, set by the main loop so nested extraction can report
+# a slice of the overall percentage instead of restarting at 0 for each tool.
+$script:InstallBase = 0
+$script:InstallSpan = 100
+$script:ProgressLabel = ''
+
+# Run a child process while polling the percentages it prints (7-Zip, Android
+# sdkmanager, rustup). Falls back to a plain wait when the child prints none.
+function Invoke-ChildWithProgress {
+    param(
+        [string]   $FilePath,
+        [string[]] $Arguments,
+        [string]   $RawArguments,
+        [string]   $Label,
+        [int]      $BasePercent = -1,
+        [int]      $SpanPercent = -1,
+        [string]   $ByteDir,
+        [int64]    $ByteTotal = 0,
+        [int]      $Id = 2
+    )
+    if ($BasePercent -lt 0) { $BasePercent = $script:InstallBase }
+    if ($SpanPercent -lt 0) { $SpanPercent = $script:InstallSpan }
+    if (-not $Label) { $Label = $script:ProgressLabel }
+
+    $argString = $RawArguments
+    if (-not $argString) {
+        $argString = (@($Arguments) | ForEach-Object { Quote-Arg $_ }) -join ' '
+    }
+
+    $log = Join-Path $UnpackDir ('progress-' + [guid]::NewGuid().ToString('N') + '.log')
+    $err = "$log.err"
+
+    # Start-Process -PassThru cannot report ExitCode on Windows PowerShell 5.1,
+    # so drive the process directly and pump both streams into files we can
+    # poll for percentages.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = $argString
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $outFs = New-Object System.IO.FileStream($log, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    $errFs = New-Object System.IO.FileStream($err, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
+    $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
+
+    $last = -1
+    $reported = -10
+    $started = Get-Date
+    $lastTick = -1
+    $lastByteCheck = $started
+    $tick = 0
+    Show-PhaseProgress -Activity 'Installing tools' -Status ("{0}  0%" -f $Label) -Percent $BasePercent -Id $Id
+    Write-TextProgress ("{0}  0%" -f $Label)
+    while (-not $proc.HasExited) {
+        # Poll quickly at the start: small archives extract in a few hundred
+        # milliseconds and a slow first sample would show 0% and then done.
+        $tick++
+        if ($tick -le 8) { Start-Sleep -Milliseconds 80 } else { Start-Sleep -Milliseconds 250 }
+        $pct = Get-LastPercent $err
+        if ($pct -lt 0) { $pct = Get-LastPercent $log }
+        if ($pct -lt 0 -and $ByteDir -and $ByteTotal -gt 0) {
+            # The child prints no percentage, but we know how many bytes the
+            # archive should produce, so measure the folder it writes into.
+            if (((Get-Date) - $lastByteCheck).TotalMilliseconds -ge 200) {
+                $lastByteCheck = Get-Date
+                $pct = [int]([Math]::Min(100, ((Get-DirBytes $ByteDir) * 100 / $ByteTotal)))
+            }
+        }
+        if ($pct -ge 0 -and $pct -ne $last) {
+            $overall = $BasePercent + [int]($SpanPercent * $pct / 100)
+            Show-PhaseProgress -Activity 'Installing tools' -Status ("{0}  {1}%" -f $Label, $pct) -Percent $overall -Id $Id
+            if ($pct - $reported -ge 10 -or ($last -lt 0 -and $pct -gt 0)) {
+                Write-TextProgress ("{0}  {1}%" -f $Label, $pct)
+                $reported = $pct
+            }
+            $last = $pct
+        } elseif ($pct -lt 0) {
+            # No percentage from this child (rustup, for example). Show that
+            # work is still happening instead of a frozen bar.
+            $secs = [int]((Get-Date) - $started).TotalSeconds
+            if ($secs -ne $lastTick -and ($secs % 5) -eq 0) {
+                Show-PhaseProgress -Activity 'Installing tools' -Status ("{0}  working {1}s" -f $Label, $secs) -Percent $BasePercent -Id $Id
+                if ($secs -ge 15 -and ($secs % 15) -eq 0) {
+                    Write-TextProgress ("{0}  working {1}s" -f $Label, $secs)
+                }
+                $lastTick = $secs
+            }
+        }
+    }
+    if ($last -lt 100) {
+        $overall = $BasePercent + $SpanPercent
+        Show-PhaseProgress -Activity 'Installing tools' -Status ("{0}  100%" -f $Label) -Percent $overall -Id $Id
+        if ($reported -lt 100) { Write-TextProgress ("{0}  100%" -f $Label) }
+    }
+    $proc.WaitForExit()
+    [void]$outTask.Wait(5000)
+    [void]$errTask.Wait(5000)
+    $outFs.Dispose()
+    $errFs.Dispose()
+    $code = $proc.ExitCode
+
+    if ($code -ne 0) {
+        Write-Warn2 "$Label exited with code $code"
+        if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log -Tail 5 -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+        }
+    }
+    Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
+    return $code
+}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 function Find-7z {
@@ -127,14 +338,24 @@ function Expand-OpenCodeNsis {
     param([string] $Installer, [string] $Dest)
 
     $seven = Find-7z
+    if (-not $seven) { throw "7-Zip not found. Install it and re-run." }
     $stage = Join-Path $UnpackDir 'opencode-nsis'
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 
-    & $seven x $Installer "-o$stage" -y | Out-Null
+    # The NSIS wrapper is tiny; almost all of the work is the payload inside.
+    $wrapperSpan = [int]($script:InstallSpan * 0.25)
+    $rc = Invoke-ChildWithProgress -FilePath $seven `
+              -Arguments @('x', $Installer, "-o$stage", '-y', '-bsp2') `
+              -Label ($script:ProgressLabel + ' installer') `
+              -BasePercent $script:InstallBase -SpanPercent $wrapperSpan `
+              -ByteDir $stage -ByteTotal (Get-ArchiveBytes -Archive $Installer -SevenZip $seven)
+    if ($rc -ne 0) { throw "7-Zip could not unpack the OpenCode installer (exit code $rc)" }
 
     $inner = Join-Path $stage '$PLUGINSDIR\app-64.7z'
     if (Test-Path $inner) {
-        Expand-ArchiveSmart -Archive $inner -Dest $Dest -StripWrapper $false
+        Expand-ArchiveSmart -Archive $inner -Dest $Dest -StripWrapper $false `
+            -BasePercent ($script:InstallBase + $wrapperSpan) `
+            -SpanPercent ($script:InstallSpan - $wrapperSpan)
     } elseif (Test-Path (Join-Path $stage 'OpenCode.exe')) {
         if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $Dest | Out-Null
@@ -153,15 +374,22 @@ function Expand-ArchiveSmart {
     param(
         [string] $Archive,
         [string] $Dest,
-        [bool]   $StripWrapper
+        [bool]   $StripWrapper,
+        [int]    $BasePercent = -1,
+        [int]    $SpanPercent = -1
     )
     $seven = Find-7z
     if (-not $seven) { throw "7-Zip not found. Install it and re-run." }
+    $archiveBytes = Get-ArchiveBytes -Archive $Archive -SevenZip $seven
 
     if ($StripWrapper) {
         $stage = Join-Path $UnpackDir ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Force -Path $stage | Out-Null
-        & $seven x $Archive "-o$stage" -y | Out-Null
+        $rc = Invoke-ChildWithProgress -FilePath $seven `
+                  -Arguments @('x', $Archive, "-o$stage", '-y', '-bsp2') `
+                  -Label $script:ProgressLabel -BasePercent $BasePercent -SpanPercent $SpanPercent `
+                  -ByteDir $stage -ByteTotal $archiveBytes
+        if ($rc -ne 0) { throw "7-Zip could not extract $Archive (exit code $rc)" }
         $child = Get-ChildItem $stage -Directory | Select-Object -First 1
         if ($child) {
             if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
@@ -180,7 +408,11 @@ function Expand-ArchiveSmart {
     else {
         if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-        & $seven x $Archive "-o$Dest" -y | Out-Null
+        $rc = Invoke-ChildWithProgress -FilePath $seven `
+                  -Arguments @('x', $Archive, "-o$Dest", '-y', '-bsp2') `
+                  -Label $script:ProgressLabel -BasePercent $BasePercent -SpanPercent $SpanPercent `
+                  -ByteDir $Dest -ByteTotal $archiveBytes
+        if ($rc -ne 0) { throw "7-Zip could not extract $Archive (exit code $rc)" }
     }
 }
 
@@ -393,7 +625,12 @@ function Install-Python {
     $stage = Join-Path $UnpackDir 'python'
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    & $seven x $Archive "-o$stage" -y | Out-Null
+    $extractSpan = [int]($script:InstallSpan * 0.65)
+    $rc = Invoke-ChildWithProgress -FilePath $seven `
+              -Arguments @('x', $Archive, "-o$stage", '-y', '-bsp2') `
+              -Label $script:ProgressLabel -BasePercent $script:InstallBase -SpanPercent $extractSpan `
+              -ByteDir $stage -ByteTotal (Get-ArchiveBytes -Archive $Archive -SevenZip $seven)
+    if ($rc -ne 0) { throw "7-Zip could not extract $Archive (exit code $rc)" }
 
     # The NuGet package unpacks to tools\ which holds the real interpreter
     $tools = Join-Path $stage 'tools'
@@ -409,7 +646,10 @@ function Install-Python {
 
     $py = Join-Path $dest 'python.exe'
     # Bootstrap pip: the NuGet build ships without it
-    Write-Host "    bootstrapping pip..."
+    $pipBase = $script:InstallBase + $extractSpan
+    Show-PhaseProgress -Activity 'Installing tools' -Status ("{0}  bootstrapping pip" -f $script:ProgressLabel) -Percent $pipBase -Id 2
+    Write-TextProgress ("{0}  bootstrapping pip" -f $script:ProgressLabel)
+    $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest 'https://bootstrap.pypa.io/get-pip.py' -OutFile (Join-Path $dest 'get-pip.py') -UseBasicParsing
     & $py (Join-Path $dest 'get-pip.py') --quiet 2>&1 | Out-Null
 
@@ -433,8 +673,12 @@ function Install-Rust {
     New-Item -ItemType Directory -Force -Path $cargo, $rustup | Out-Null
     $env:CARGO_HOME   = $cargo
     $env:RUSTUP_HOME  = $rustup
-    & $Archive -y --no-modify-path --default-toolchain stable --profile minimal 2>&1 |
-        Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" }
+    # rustup-init prints no percentages, so the helper shows elapsed time and
+    # keeps the bar alive while it downloads the toolchain.
+    $rc = Invoke-ChildWithProgress -FilePath $Archive `
+              -Arguments @('-y', '--no-modify-path', '--default-toolchain', 'stable', '--profile', 'minimal') `
+              -Label $script:ProgressLabel -BasePercent $script:InstallBase -SpanPercent $script:InstallSpan
+    if ($rc -ne 0) { throw "rustup-init failed (exit code $rc)" }
     $v = & (Join-Path $cargo 'bin\cargo.exe') --version
     Write-Ok "Rust  $v"
 }
@@ -446,7 +690,12 @@ function Install-Android {
     $stage = Join-Path $UnpackDir 'androidcmd'
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    & $seven x $Archive "-o$stage" -y | Out-Null
+    $cmdSpan = [int]($script:InstallSpan * 0.25)
+    $rc = Invoke-ChildWithProgress -FilePath $seven `
+              -Arguments @('x', $Archive, "-o$stage", '-y', '-bsp2') `
+              -Label $script:ProgressLabel -BasePercent $script:InstallBase -SpanPercent $cmdSpan `
+              -ByteDir $stage -ByteTotal (Get-ArchiveBytes -Archive $Archive -SevenZip $seven)
+    if ($rc -ne 0) { throw "7-Zip could not extract $Archive (exit code $rc)" }
 
     # The SDK manager only runs from a directory literally named 'latest'
     $cl = Join-Path $sdk 'cmdline-tools'
@@ -473,6 +722,7 @@ function Install-Android {
 
     # Licences are non-interactive. The tool blocks on stdin when it inherits
     # a console, so pipe a supply of 'y' rather than letting it wait.
+    Write-TextProgress ("{0}  accepting SDK licences" -f $script:ProgressLabel)
     1..40 | ForEach-Object { 'y' } | & $sdkm --sdk_root="$sdk" --licenses 2>&1 | Out-Null
 
     # NOTE: the current cmdline-tools delegate to the new `android` CLI, which
@@ -480,9 +730,17 @@ function Install-Android {
     # with "Package not found".
     $pkgs = @('platform-tools', 'build-tools/35.0.0', 'platforms/android-35',
               'build-tools/34.0.0', 'platforms/android-34')
+    $pkgBase = $script:InstallBase + $cmdSpan + [int]($script:InstallSpan * 0.05)
+    $pkgSpan = $script:InstallSpan - $cmdSpan - [int]($script:InstallSpan * 0.05)
+    $k = 0
     foreach ($p in $pkgs) {
         Write-Host "    installing $p ..."
-        & $sdkm --sdk_root="$sdk" $p 2>&1 | Select-Object -Last 1 | ForEach-Object { Write-Host "      $_" }
+        $b  = $pkgBase + [int]($pkgSpan * $k / $pkgs.Count)
+        $sp = [int]($pkgSpan * ($k + 1) / $pkgs.Count) - [int]($pkgSpan * $k / $pkgs.Count)
+        $cmdLine = '/c "' + $sdkm + '" --sdk_root="' + $sdk + '" ' + $p
+        [void](Invoke-ChildWithProgress -FilePath $env:ComSpec -RawArguments $cmdLine `
+                   -Label ("android " + $p) -BasePercent $b -SpanPercent $sp)
+        $k++
     }
 
     $adb = Join-Path $sdk 'platform-tools\adb.exe'
@@ -684,11 +942,32 @@ foreach ($n in $selected) {
 $downloadable = @($selected | Where-Object { $urls[$_] })
 Write-Step "Downloading $($downloadable.Count) item(s) in parallel"
 
-$jobs = foreach ($n in $downloadable) {
+$progDir = Join-Path $UnpackDir '_dlprogress'
+New-Item -ItemType Directory -Force -Path $progDir | Out-Null
+
+$destFor = @{}
+$jobs = @(foreach ($n in $downloadable) {
     $dest = Join-Path $DlDir (Get-ArchiveName -Name $n -Url $urls[$n])
-    Start-Job -Name $n -ArgumentList $urls[$n], $dest -ScriptBlock {
-        param($u, $d)
+    $destFor[$n] = $dest
+    $totalFile = Join-Path $progDir "$n.total"
+    Start-Job -Name $n -ArgumentList $urls[$n], $dest, $totalFile -ScriptBlock {
+        param($u, $d, $totalFile)
         $ProgressPreference = 'SilentlyContinue'
+        # Remember the expected size first so the parent can draw a real
+        # percentage while the parallel downloads are still running.
+        $total = 0
+        try {
+            $head = [System.Net.HttpWebRequest]::Create($u)
+            $head.Method = 'HEAD'
+            $head.Timeout = 30000
+            $head.AllowAutoRedirect = $true
+            $head.UserAgent = 'OpenCode-Portable'
+            $resp = $head.GetResponse()
+            if ($resp.ContentLength -gt 0) { $total = $resp.ContentLength }
+            $resp.Close()
+        } catch { $total = 0 }
+        try { [System.IO.File]::WriteAllText($totalFile, [string]$total) } catch { }
+
         try {
             Invoke-WebRequest -Uri $u -OutFile $d -UseBasicParsing -TimeoutSec 3600
             "OK"
@@ -696,18 +975,68 @@ $jobs = foreach ($n in $downloadable) {
             "FAIL $($_.Exception.Message)"
         }
     }
-}
+})
 
 $downloadOk = @{}
-foreach ($j in $jobs) {
-    $r = Receive-Job -Job $j -Wait -AutoRemoveJob 2>$null
-    if ($r -match '^OK') {
-        $downloadOk[$j.Name] = $true
-        Write-Ok "$($j.Name) downloaded"
-    } else {
-        $downloadOk[$j.Name] = $false
-        Write-Err2 "$($j.Name) download failed : $r"
+$announced  = @{}
+$milestone  = -10
+
+if ($downloadable.Count -gt 0) {
+    $tick = 0
+    while ($true) {
+        # Collect finished jobs as soon as they exit, not after everything ends.
+        foreach ($j in @($jobs | Where-Object { $_.State -ne 'Running' -and -not $announced.ContainsKey($_.Name) })) {
+            $r = Receive-Job -Job $j -Wait -AutoRemoveJob 2>$null
+            if ("$r" -match '^OK') {
+                $downloadOk[$j.Name] = $true
+                Write-Ok "$($j.Name) downloaded"
+            } else {
+                $downloadOk[$j.Name] = $false
+                Write-Err2 "$($j.Name) download failed : $r"
+            }
+            $announced[$j.Name] = $true
+        }
+
+        $running = @($jobs | Where-Object { $_.State -eq 'Running' })
+        if ($running.Count -eq 0) { break }
+
+        $doneBytes  = 0
+        $totalBytes = 0
+        $unknown    = $false
+        foreach ($n in $downloadable) {
+            $p = $destFor[$n]
+            if (Test-Path -LiteralPath $p) { $doneBytes += (Get-Item -LiteralPath $p).Length }
+            $tf = Join-Path $progDir "$n.total"
+            $t = 0
+            if (Test-Path -LiteralPath $tf) {
+                try { $t = [int64](Get-Content -LiteralPath $tf -Raw -ErrorAction Stop).Trim() } catch { $t = 0 }
+            }
+            if ($t -gt 0) { $totalBytes += $t } else { $unknown = $true }
+        }
+
+        $pct = -1
+        if (-not $unknown -and $totalBytes -gt 0) {
+            $pct = [int]([Math]::Min(100, ($doneBytes * 100 / $totalBytes)))
+        }
+        $status = "{0}/{1} files, {2}" -f $announced.Count, $downloadable.Count, (Format-Bytes $doneBytes)
+        if ($pct -ge 0) { $status += " of $(Format-Bytes $totalBytes) ($pct%)" }
+        Show-PhaseProgress -Activity 'Downloading tools' -Status $status -Percent $pct -Id 1
+        if ($pct -ge 0 -and ($pct - $milestone) -ge 5) {
+            Write-TextProgress "downloading $pct%  $status"
+            $milestone = $pct
+        }
+        $tick++
+        if ($tick -le 25) { Start-Sleep -Milliseconds 150 } else { Start-Sleep -Milliseconds 400 }
     }
+
+    # Anything still unannounced (failed to start, for example).
+    foreach ($j in @($jobs | Where-Object { -not $announced.ContainsKey($_.Name) })) {
+        $r = Receive-Job -Job $j -Wait -AutoRemoveJob 2>$null
+        if ("$r" -match '^OK') { $downloadOk[$j.Name] = $true; Write-Ok "$($j.Name) downloaded" }
+        else { $downloadOk[$j.Name] = $false; Write-Err2 "$($j.Name) download failed : $r" }
+        $announced[$j.Name] = $true
+    }
+    Write-Progress -Id 1 -Activity 'Downloading tools' -Completed
 }
 
 # ---- install --------------------------------------------------------------
@@ -729,11 +1058,22 @@ $installers = @{
 $succeeded = @()
 $failed    = @()
 
-foreach ($n in $selected) {
+$toolCount = @($selected).Count
+for ($idx = 0; $idx -lt $toolCount; $idx++) {
+    $n = $selected[$idx]
     if (-not $downloadOk.ContainsKey($n) -or -not $downloadOk[$n]) {
         $failed = @($failed) + $n
         continue
     }
+    # Give this tool a slice of the install bar: base..base+span.
+    $script:InstallBase = [int](100 * $idx / $toolCount)
+    $script:InstallSpan = [int](100 * ($idx + 1) / $toolCount) - $script:InstallBase
+    $script:ProgressLabel = $n
+    Show-PhaseProgress -Activity 'Installing tools' `
+        -Status ("{0} ({1}/{2})  {3}%" -f $n, ($idx + 1), $toolCount, $script:InstallBase) `
+        -Percent $script:InstallBase -Id 2
+    Write-TextProgress ("installing {0} ({1}/{2}, {3}%)" -f $n, ($idx + 1), $toolCount, $script:InstallBase)
+
     $archive = Join-Path $DlDir (Get-ArchiveName -Name $n -Url $urls[$n])
     try {
         & $installers[$n] $archive
@@ -743,6 +1083,7 @@ foreach ($n in $selected) {
         $failed = @($failed) + $n
     }
 }
+Write-Progress -Id 2 -Activity 'Installing tools' -Completed
 
 # ---- cleanup staging ------------------------------------------------------
 if (Test-Path $UnpackDir) {
@@ -760,7 +1101,11 @@ foreach ($n in $allTools) {
     else                  { Write-Host ("    FAILED     {0,-10} {1,-26}" -f $n, $t.Label) -ForegroundColor Red }
 }
 
-$totalMB = ($Tools | Where-Object { $_.Name -in $succeeded } | Measure-Object SizeMB -Sum).Sum
+$totalMB = 0
+if ($succeeded.Count -gt 0) {
+    $totalMB = ($Tools | Where-Object { $_.Name -in $succeeded } | Measure-Object SizeMB -Sum).Sum
+    if ($null -eq $totalMB) { $totalMB = 0 }
+}
 Write-Host ""
 Write-Host ("    {0} installed, {1} failed, about {2} MB on disk" -f $succeeded.Count, $failed.Count, $totalMB) -ForegroundColor Cyan
 Write-Host ""

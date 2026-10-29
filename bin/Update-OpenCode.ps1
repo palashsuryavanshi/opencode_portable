@@ -108,6 +108,195 @@ if (-not $sevenZip) {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# Progress reporting
+# Write-Progress draws the bar in a console; when the output is redirected the
+# same numbers are printed as milestone lines instead.
+# ---------------------------------------------------------------------------
+$script:TextMode = $false
+try { $script:TextMode = [Console]::IsOutputRedirected } catch { $script:TextMode = $true }
+
+function Format-Bytes {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N1} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N0} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N0} KB' -f ($Bytes / 1KB))
+}
+
+function Show-PhaseProgress {
+    param([string]$Activity, [string]$Status, [int]$Percent, [int]$Id = 1)
+    if ($Percent -lt 0) {
+        Write-Progress -Id $Id -Activity $Activity -Status $Status
+    } else {
+        Write-Progress -Id $Id -Activity $Activity -Status $Status -PercentComplete ([Math]::Min(100, $Percent))
+    }
+}
+
+function Write-TextProgress {
+    param([string]$Text)
+    if ($script:TextMode) { Write-Host "    $Text" -ForegroundColor DarkGray }
+}
+
+function Get-LastPercent {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return -1 }
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+        try {
+            $len = $fs.Length
+            if ($len -le 0) { return -1 }
+            $take = [Math]::Min(4096, $len)
+            [void]$fs.Seek(-$take, 'End')
+            $bytes = New-Object byte[] $take
+            [void]$fs.Read($bytes, 0, $take)
+            $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+        } finally { $fs.Dispose() }
+    } catch { return -1 }
+    $m = [regex]::Matches($text, '(\d{1,3})\s*%')
+    if ($m.Count -eq 0) { return -1 }
+    $pct = [int]$m[$m.Count - 1].Groups[1].Value
+    if ($pct -lt 0)   { return 0 }
+    if ($pct -gt 100) { return 100 }
+    return $pct
+}
+
+# Download to a file while reporting percentage. Invoke-WebRequest cannot show
+# progress when it writes straight to disk, so stream it by hand and fall back
+# to Invoke-WebRequest if the request object is unsuitable (proxies, etc.).
+function Save-FileWithProgress {
+    param([string]$Url, [string]$Path, [string]$Label = 'installer')
+
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.Method = 'GET'
+    $req.Timeout = 60000
+    $req.ReadWriteTimeout = 300000
+    $req.AllowAutoRedirect = $true
+    $req.UserAgent = 'OpenCode-Portable'
+
+    $resp  = $req.GetResponse()
+    $total = $resp.ContentLength
+    $in    = $resp.GetResponseStream()
+    $out   = [System.IO.File]::Create($Path)
+    $done  = 0
+    try {
+        $buf = New-Object byte[] 131072
+        $lastPct  = -1
+        $lastText = -10
+        while (($read = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $out.Write($buf, 0, $read)
+            $done += $read
+            if ($total -gt 0) {
+                $pct = [int]($done * 100 / $total)
+                if ($pct -ne $lastPct) {
+                    Show-PhaseProgress -Activity 'Downloading OpenCode' `
+                        -Status ("{0}  {1} of {2} ({3}%)" -f $Label, (Format-Bytes $done), (Format-Bytes $total), $pct) `
+                        -Percent $pct -Id 1
+                    if (($pct - $lastText) -ge 10) {
+                        Write-TextProgress ("downloading {0}  {1}%" -f $Label, $pct)
+                        $lastText = $pct
+                    }
+                    $lastPct = $pct
+                }
+            } else {
+                Show-PhaseProgress -Activity 'Downloading OpenCode' `
+                    -Status ("{0}  {1} downloaded" -f $Label, (Format-Bytes $done)) -Percent -1 -Id 1
+                if (($done / 1MB) - $lastText -ge 25) {
+                    Write-TextProgress ("downloading {0}  {1}" -f $Label, (Format-Bytes $done))
+                    $lastText = $done / 1MB
+                }
+            }
+        }
+    } finally {
+        $out.Close()
+        $in.Close()
+        $resp.Close()
+    }
+    return $done
+}
+
+# Unpack with 7-Zip while polling its percentage output.
+function Expand-WithProgress {
+    param([string]$Archive, [string]$Dest, [string]$Label)
+
+    # 7-Zip omits the progress line entirely when a job is very short, so ask
+    # it for the unpacked size up front and fall back to measuring the folder
+    # while it works. Without this a small archive shows nothing at all.
+    $totalBytes = 0
+    try {
+        & $sevenZip l -slt $Archive 2>$null | ForEach-Object {
+            if ($_ -match '^Size = (\d+)$') { $totalBytes += [int64]$Matches[1] }
+        }
+    } catch { $totalBytes = 0 }
+
+    $log = Join-Path $dlDir ('_7z-' + [guid]::NewGuid().ToString('N') + '.log')
+    $err = "$log.err"
+    $argString = 'x "' + $Archive + '" -o"' + $Dest + '" -y -bsp2'
+
+    # Start-Process -PassThru cannot report ExitCode on Windows PowerShell 5.1,
+    # so start the process directly and pump both streams into log files.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $sevenZip
+    $psi.Arguments = $argString
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $outFs = New-Object System.IO.FileStream($log, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    $errFs = New-Object System.IO.FileStream($err, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+    $outTask = $proc.StandardOutput.BaseStream.CopyToAsync($outFs)
+    $errTask = $proc.StandardError.BaseStream.CopyToAsync($errFs)
+
+    $last = -1
+    $reported = -10
+    $lastByteCheck = Get-Date
+    $tick = 0
+    Show-PhaseProgress -Activity 'Extracting' -Status ("{0}  0%" -f $Label) -Percent 0 -Id 2
+    Write-TextProgress ("extracting {0}  0%" -f $Label)
+    while (-not $proc.HasExited) {
+        # Fast first samples: a 20 MB archive is unpacked before a 250 ms
+        # timer would fire a second time.
+        $tick++
+        if ($tick -le 8) { Start-Sleep -Milliseconds 80 } else { Start-Sleep -Milliseconds 250 }
+        $pct = Get-LastPercent $err
+        if ($pct -lt 0) { $pct = Get-LastPercent $log }
+        if ($pct -lt 0 -and $totalBytes -gt 0) {
+            if (((Get-Date) - $lastByteCheck).TotalMilliseconds -ge 200) {
+                $lastByteCheck = Get-Date
+                $bytes = 0
+                Get-ChildItem -LiteralPath $Dest -Recurse -File -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { $bytes += $_.Length }
+                $pct = [int]([Math]::Min(100, ($bytes * 100 / $totalBytes)))
+            }
+        }
+        if ($pct -ge 0 -and $pct -ne $last) {
+            Show-PhaseProgress -Activity 'Extracting' -Status ("{0}  {1}%" -f $Label, $pct) -Percent $pct -Id 2
+            if (($pct - $reported) -ge 10) {
+                Write-TextProgress ("extracting {0}  {1}%" -f $Label, $pct)
+                $reported = $pct
+            }
+            $last = $pct
+        }
+    }
+    if ($last -lt 100) {
+        Show-PhaseProgress -Activity 'Extracting' -Status ("{0}  100%" -f $Label) -Percent 100 -Id 2
+        if ($reported -lt 100) { Write-TextProgress ("extracting {0}  100%" -f $Label) }
+    }
+    $proc.WaitForExit()
+    [void]$outTask.Wait(5000)
+    [void]$errTask.Wait(5000)
+    $outFs.Dispose()
+    $errFs.Dispose()
+    $code = $proc.ExitCode
+    Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
+    if ($code -ne 0) {
+        Write-Error "7-Zip could not unpack $Archive (exit code $code)."
+        exit 1
+    }
+}
+
 # --- 1. Check current version ---
 $currentVer = "unknown"
 if (Test-Path (Join-Path $opencodeDir 'OpenCode.exe')) {
@@ -126,7 +315,16 @@ New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
 try {
   $ProgressPreference = 'SilentlyContinue'
-  Invoke-WebRequest -Uri $DownloadUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 600
+  try {
+    $bytes = Save-FileWithProgress -Url $DownloadUrl -Path $installerPath -Label 'installer'
+  } catch {
+    # Some proxy setups reject a hand-built request; plain IWR still works,
+    # it just cannot report progress.
+    Write-Host "  Streaming download unavailable - falling back..." -ForegroundColor DarkGray
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 600
+    $bytes = (Get-Item $installerPath).Length
+  }
+  Write-Progress -Id 1 -Activity 'Downloading OpenCode' -Completed
   $sizeMB = [math]::Round((Get-Item $installerPath).Length / 1MB, 1)
   Write-Host "  Downloaded: $sizeMB MB"
 } catch {
@@ -149,7 +347,7 @@ New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 #   * full 7z.exe -> $PLUGINSDIR\app-64.7z, a second archive to unpack
 #   * bundled 7za -> the app files appear directly at the top level
 # Handle both, otherwise the update appears to succeed but installs nothing.
-& $sevenZip x $installerPath -o"$stageDir" -y | Out-Null
+Expand-WithProgress -Archive $installerPath -Dest $stageDir -Label 'installer'
 
 # Deliberately a sibling of $stageDir, not a child: enumerating $stageDir while
 # $newAppDir sits inside it would pick up app-new and try to move it into itself.
@@ -158,7 +356,7 @@ $app7z = Join-Path $stageDir '$PLUGINSDIR\app-64.7z'
 
 if (Test-Path $app7z) {
     Write-Host "  Extracting app archive..."
-    & $sevenZip x $app7z -o"$newAppDir" -y | Out-Null
+    Expand-WithProgress -Archive $app7z -Dest $newAppDir -Label 'application'
 } elseif (Test-Path (Join-Path $stageDir 'OpenCode.exe')) {
     Write-Host "  App payload found directly in the installer."
     if (Test-Path $newAppDir) { Remove-Item $newAppDir -Recurse -Force }
@@ -169,6 +367,8 @@ if (Test-Path $app7z) {
     Write-Error "Could not locate the OpenCode payload. The installer format may have changed."
     exit 1
 }
+
+Write-Progress -Id 2 -Activity 'Extracting' -Completed
 
 # --- 5. Verify extracted app ---
 # resources\opencode-cli.exe is the binary the desktop app spawns for every

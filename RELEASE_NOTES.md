@@ -47,6 +47,7 @@ This downloads ~2 GB of tools and installs them to `apps/`. Only needs to be don
 - **Verification** - option 4 checks path isolation
 - **Tool manager** - option 7 installs, removes and launches toolchains
 - **Self-cleaning updates** - downloaded installers are deleted and only the newest backup of each kind is kept
+- **Progress feedback** - download and install progress are shown as percentages in a console and as milestone lines when captured to a log
 
 ## Updating OpenCode
 

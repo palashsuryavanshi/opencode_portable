@@ -18,7 +18,7 @@ function Remove-OldBackups {
 
     $dirs = @(Get-ChildItem -LiteralPath $BackupDir -Directory -ErrorAction SilentlyContinue |
               Where-Object { $_.Name -like "$Prefix*" } |
-              Sort-Object Name -Descending)   # names are timestamped: newest first
+              Sort-Object -Property CreationTime -Descending)
 
     if ($dirs.Count -le $Keep) { return $removed }
 
